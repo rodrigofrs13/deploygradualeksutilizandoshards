@@ -14,4 +14,3 @@ override.tf.json
 *_override.tf.json
 
 
-terraform/platform/environment/dev/secrets.tfvars
