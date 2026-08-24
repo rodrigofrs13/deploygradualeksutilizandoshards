@@ -8,9 +8,9 @@ Java/Spring Boot de exemplo cujo deploy é gradual em dois níveis:
 
 - **Dentro de cada shard**: canário controlado pelo **Argo Rollouts**
   (`Rollout` em vez de `Deployment`, com passos de peso/pausa).
-- **Entre as shards**: promovido por duas `Application` do ArgoCD geradas
-  por **ApplicationSet**, que só sincroniza a segunda shard depois de uma
-  **aprovação manual**.
+- **Entre as shards**: promovido por um único `ApplicationSet` do ArgoCD
+  que gera as duas `Application` (uma por shard), e que só sincroniza a
+  segunda shard depois de uma **aprovação manual**.
 
 O disparo de tudo começa com uma mudança em `apps/`: um **Argo Workflow**
 (disparado automaticamente por polling em até 2 min, veja "CI: Argo
@@ -29,7 +29,7 @@ iniciando o canário.
 | Nova imagem no ECR dispara o deploy no Kubernetes | `terraform/platform/argoworkflows-template.tf` atualiza `apps/springboot/values.yaml` e dá `git push` — a `Application` `springboot-shard-1` (`syncPolicy.automated`) sincroniza sozinha a partir daí |
 | Deploy gradual dentro da shard = canário Argo Rollouts | `apps/springboot/templates/rollout.yaml` (`strategy.canary.steps`) |
 | Deploy gradual entre shards = aprovação manual | `terraform/platform/argocd-applicationset.tf` — `syncPolicy.automated` só na `springboot-shard-1` |
-| ApplicationSet do ArgoCD controla o deploy entre shards | `terraform/platform/argocd-applicationset.tf` (uma `Application` por shard) |
+| ApplicationSet do ArgoCD controla o deploy entre shards | `terraform/platform/argocd-applicationset.tf` — um único `ApplicationSet` (`springboot-shards`), com um generator `list` por shard |
 | Toda a infra criada pelo candidato (EKS, EC2, app Java) | `terraform/infra` + `terraform/platform` + `apps/` |
 | IaC | Terraform (`terraform/infra`, `terraform/platform`) |
 | Uma região/uma conta AWS | `var.aws_region` único, sem multi-account/multi-region |
@@ -52,7 +52,7 @@ aponta pro arquivo a mexer).
 | Acesso à UI do Argo Workflows | **(A)** NLB `internal` — só acessível de dentro da VPC (bastion/VPN). **(B)** NLB `internet-facing` — acessível publicamente pela internet. | **(B) `internet-facing`** — `terraform/platform/environment/dev/argo-workflows.yaml` | Decisão explícita do usuário. Registrado como ponto de atenção no próprio arquivo de values e na seção "Expondo o Argo Workflows via LoadBalancer" abaixo: combinado com `--auth-mode=server` (UI sem login), isso dá controle real sobre o pipeline de CI a qualquer pessoa com o hostname do NLB — aceitável para Demo, não recomendado além disso. |
 | Acesso web às apps rodando nas shards (para testar manualmente) | **(A)** Mais um NLB (por shard ou compartilhado), igual ArgoCD/Argo Workflows. **(B)** `kubectl port-forward` sob demanda. | **(B) `port-forward`** | Escolha do usuário — mais simples pra um teste pontual, sem manter mais um Load Balancer (custo/superfície) rodando só pra acessar a app de exemplo. Ver "Testar a resposta da aplicação" em `TESTE-END-TO-END.md`. |
 | Build da imagem em paralelo ("modo gráfico", inspirado num artigo sobre `withParam`) | **(A)** `withParam` pra buildar N imagens em paralelo (fan-out). **(B)** Manter os 4 passos sequenciais (`steps`) como estão. | **(B) Sequencial, sem paralelismo** | O projeto builda uma única imagem a partir de um único `Dockerfile` — não há múltiplos alvos de build pra paralelizar. `withParam` resolve fan-out sobre uma lista de itens distintos, o que não se aplica aqui. Além disso, qualquer `Workflow` do Argo já renderiza como grafo na UI — não existe um "modo gráfico" separado a habilitar. Descartada por ora ("por enquanto não"), fica registrado caso o projeto cresça pra buildar mais de uma imagem. |
-| Estrutura do ApplicationSet (shard-1/shard-2) | **(A)** Um único `ApplicationSet` com `generators.list` de 2 itens (shard-1/shard-2), usando `goTemplate` pra variar `shard`/`namespace`. **(B)** Dois `kubectl_manifest` fixos, um por shard. | **(B) Dois `kubectl_manifest` fixos** — `terraform/platform/argocd-applicationset.tf` | O `syncPolicy.automated` precisa existir na shard-1 e estar **totalmente ausente** na shard-2 (não só com um valor diferente) — e o `goTemplate` do ArgoCD só substitui valores escalares dentro de uma estrutura YAML já válida, não inclui/omite uma chave inteira condicionalmente. Duas Applications estáticas evitam esse problema por completo. |
+| Estrutura do ApplicationSet (shard-1/shard-2) | **(A)** Dois `kubectl_manifest` fixos (dois recursos `ApplicationSet`, um por shard). **(B)** Um único `ApplicationSet`, com um generator `list` por shard (cada um com 1 elemento e, se precisar, seu próprio `template` override) em vez de um único generator com 2 elementos. | **(B) Um único `ApplicationSet`** — `terraform/platform/argocd-applicationset.tf` | O requisito pede "**um** ApplicationSet controlando o deploy entre as shards" — (A) tecnicamente usava o recurso certo (`kind: ApplicationSet`), mas eram **dois** objetos, não um. (B) usa um único `ApplicationSet`, com dois generators `list` (não um único generator com 2 elementos): o override de `template` no ArgoCD é por **generator**, não por elemento dentro da lista de um mesmo generator, então variar o `syncPolicy` por shard exige um generator por shard. O generator da shard-1 tem seu próprio `template` (cópia completa — `metadata`/`project`/`source`/`destination`/`syncPolicy`, exigida pelo schema do CRD assim que qualquer `template` de generator existe) sobrescrevendo o `syncPolicy` com `automated`; o da shard-2 não tem `template` nenhum, herdando o template top-level inteiro (sem `automated`) — mesmo resultado de aprovação manual de antes, agora com um único recurso. |
 
 ## Pré-requisitos
 
@@ -124,7 +124,7 @@ scripts/
 - `argocd.tf` — instalação do ArgoCD via Helm (chart oficial `argo-cd` do repo `argo-helm`)
 - `argocd-github-secret.tf` — Secret de credenciais do repositório GitHub para o **ArgoCD** clonar (**comentado**, veja Notas — diferente do Secret usado pelo Argo Workflow, veja abaixo)
 - `argocd-project.tf` — AppProject do ArgoCD
-- `argocd-applicationset.tf` — duas `Application` (uma por shard), aprovação manual a partir da 2ª
+- `argocd-applicationset.tf` — um único `ApplicationSet` (dois generators `list`, um por shard) gerando as duas `Application`, aprovação manual a partir da 2ª
 - `argorollouts.tf` — instalação do Argo Rollouts via Helm (namespace `argo-rollouts`)
 - `argoworkflows.tf` — instalação do Argo Workflows via Helm (namespace `argo-workflows`)
 - `argoworkflows-irsa.tf` — IAM OIDC Identity Provider do cluster + role/policy IRSA (push no ECR) + ServiceAccount + Secret de credenciais Git
@@ -228,29 +228,50 @@ Os comandos pra acompanhar e promover um rollout (`kubectl argo rollouts
 get`/`promote`) estão no passo a passo com o que esperar em cada um —
 `TESTE-END-TO-END.md`, seções 7 e 11.
 
-### Entre shards: duas Applications do ArgoCD + aprovação manual
+### Entre shards: um único ApplicationSet do ArgoCD + aprovação manual
 
-`terraform/platform/argocd-applicationset.tf` define **duas** `Application`
-do ArgoCD (`springboot-shard-1`/`springboot-shard-2`), ambas apontando para
-o mesmo chart (`apps/springboot`, `var.argocd_apps_path`), sobrescrevendo só
-`shard`/`namespace` via `spec.source.helm.parameters`:
+`terraform/platform/argocd-applicationset.tf` define **um único**
+`ApplicationSet` (`springboot-shards`), que gera as duas `Application`
+(`springboot-shard-1`/`springboot-shard-2`) apontando para o mesmo chart
+(`apps/springboot`, `var.argocd_apps_path`), sobrescrevendo `shard`/
+`namespace` via `spec.source.helm.parameters` a partir do parâmetro
+`{{ .shard }}` de cada generator (`goTemplate: true`):
 
-- **`springboot-shard-1`** tem `syncPolicy.automated` — sincroniza sozinha
-  assim que o chart mudar no Git (ex.: o Argo Workflow atualizando
-  `image.tag`/`image.repository` em `values.yaml`), disparando o canário do
-  Argo Rollouts na shard 1.
-- **`springboot-shard-2`** **não** tem `syncPolicy.automated` — fica
-  `OutOfSync` até alguém aprovar manualmente.
+- **`spec.generators`** tem **dois** generators `list`, cada um com **1**
+  elemento (`shard: shard-1` / `shard: shard-2`) — não um único generator
+  com uma lista de 2 elementos, pelo motivo abaixo.
+- O generator da shard-1 tem seu **próprio** `template` (aninhado dentro do
+  `list:`) — uma cópia **completa e autossuficiente** do template
+  (`metadata`, `project`, `source`, `destination`, `syncPolicy`), igual ao
+  template top-level só que com `syncPolicy.automated` a mais — sincroniza
+  sozinha assim que o chart mudar no Git.
+- O generator da shard-2 **não** tem `template` nenhum — herda o template
+  top-level inteiro, cujo `syncPolicy` só tem `syncOptions` (sem
+  `automated`). Fica `OutOfSync` até alguém aprovar manualmente.
 
-São dois `kubectl_manifest` fixos (não um único `ApplicationSet` com um
-generator de lista com 2 itens) porque o `syncPolicy.automated` da shard-1
-precisa existir e o da shard-2 precisa estar **totalmente ausente** — e o
-`goTemplate` do ArgoCD só substitui valores escalares dentro de uma
-estrutura YAML já válida, não consegue incluir/omitir uma chave YAML
-inteira condicionalmente (um `{{- if }}` no lugar de uma chave gera YAML
-inválido antes mesmo do Kubernetes processar o manifest). Duas Applications
-estáticas, cada uma com o `syncPolicy` certo hardcoded, evitam esse
-problema por completo.
+Por que dois generators de 1 elemento em vez de um generator com uma lista
+de 2 elementos: o override de `template` no ArgoCD é aplicado por
+**generator**, não por elemento dentro da lista de um mesmo generator — um
+único generator `list` com os dois shards aplicaria o mesmo `template` (ou
+a mesma ausência dele) aos dois, sem jeito de variar o `syncPolicy` por
+elemento. Com dois generators (documentado oficialmente: [Template →
+generator
+templates](https://argo-cd.readthedocs.io/en/stable/operator-manual/applicationset/Template/#generator-templates)),
+cada um pode ter seu próprio override — ainda um único recurso
+`ApplicationSet`, só que com `spec.generators` de 2 itens em vez de
+`spec.generators[0].list.elements` de 2 itens.
+
+Por que o `template` da shard-1 restata **tudo** (`metadata`/`project`/
+`source`/`destination`), não só o `syncPolicy` que difere: na prática, o
+CRD `ApplicationSet` valida o `template` de um generator contra o schema
+**inteiro** de `ApplicationSetTemplate` assim que ele existe — ou seja,
+`metadata`/`spec.project`/`spec.destination` viram campo obrigatório
+("Required value") nesse ponto, mesmo que o controller depois faça merge
+com o `spec.template` de baixo em tempo de reconciliação. Só sobrescrever
+`spec.syncPolicy` (deixando o resto de fora) falha na admissão do
+Kubernetes com `spec.generators[0].list.template.spec.destination:
+Required value` (e o mesmo pra `project` e `metadata`) — foi exatamente o
+erro visto ao aplicar essa versão pela primeira vez.
 
 Fluxo típico de um deploy, em prosa (o passo a passo com todos os comandos
 e o que esperar em cada etapa está em `TESTE-END-TO-END.md`, seções 5 a
