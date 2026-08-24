@@ -12,7 +12,7 @@ spec:
   # Mantém só os 5 ReplicaSets mais recentes no histórico (o padrão do Argo
   # Rollouts é 10, igual ao Deployment) — evita acumular ReplicaSets antigos
   # órfãos no namespace a cada novo deploy/rollback.
-  revisionHistoryLimit: 5
+  revisionHistoryLimit: 3
 
   selector:
     matchLabels:
