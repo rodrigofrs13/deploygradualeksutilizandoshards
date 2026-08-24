@@ -9,7 +9,7 @@ replicas: 3
 
 image:
   repository: 246732148991.dkr.ecr.us-east-1.amazonaws.com/eks-automode-app-dev
-  tag: "1.0.0"
+  tag: "344f977"
   pullPolicy: IfNotPresent
 
 service:
