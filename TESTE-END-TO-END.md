@@ -17,6 +17,7 @@ para o próximo passo.
 Confirme que as ferramentas necessárias estão instaladas e autenticadas
 antes de começar:
 
+
 ```bash
 terraform -version   # >= 1.4.4
 aws sts get-caller-identity   # credenciais AWS válidas
