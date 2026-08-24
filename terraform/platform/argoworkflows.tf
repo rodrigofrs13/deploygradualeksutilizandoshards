@@ -25,14 +25,11 @@ resource "helm_release" "argo_workflows" {
   # usada em argocd.tf/argorollouts.tf).
   cleanup_on_fail = true
 
-  # server.extraArgs com --auth-mode=server deixa a UI acessível sem exigir
-  # login SSO/client — suficiente para uma Demo local (não use assim em
-  # produção). O disparo do build em si continua manual via `argo submit`
-  # (ver README) — isso só afeta o acesso à UI/API.
-  set {
-    name  = "server.extraArgs[0]"
-    value = "--auth-mode=server"
-  }
+  # Caminho relativo a partir de terraform/platform — mesmo padrão de
+  # environment/dev/argocd.yaml: --auth-mode=server (UI sem exigir login
+  # SSO/client, suficiente para Demo) + exposição via NLB (Service
+  # type=LoadBalancer), em vez de depender só de `kubectl port-forward`.
+  values = [file("./environment/dev/argo-workflows.yaml")]
 
   depends_on = [kubernetes_namespace.argo_workflows]
 }

@@ -45,6 +45,18 @@ resource "kubectl_manifest" "argo_workflow_template" {
         - metadata:
             name: workspace
           spec:
+            # "gp2" (StorageClass padrão de qualquer cluster EKS) NÃO
+            # funciona no Auto Mode: seu provisioner legado
+            # "kubernetes.io/aws-ebs" migra (CSI migration) para
+            # "ebs.csi.aws.com", o driver EBS CSI "clássico" — que não roda
+            # no Auto Mode (lá o driver é 100% gerenciado pela AWS, sem pod
+            # visível). O PVC fica preso pra sempre em Pending esperando um
+            # provisioner que não existe. O Auto Mode usa um provisioner
+            # PRÓPRIO, "ebs.csi.eks.amazonaws.com", e — ao contrário do que
+            # o nome "block storage capability" sugere — não cria nenhuma
+            # StorageClass sozinho; "auto-ebs-sc" é criada explicitamente em
+            # storageclass.tf (kubectl_manifest.storageclass_auto_ebs).
+            storageClassName: auto-ebs-sc
             accessModes: ["ReadWriteOnce"]
             resources:
               requests:

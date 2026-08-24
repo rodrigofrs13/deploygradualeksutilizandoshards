@@ -23,7 +23,7 @@ node_role_name = "eks-automode-dev-node-role"
 # Precisa bater com terraform/infra/environment/dev/terraform.tfvars — usado
 # pelo Argo Workflow (argoworkflows-irsa.tf/argoworkflows-template.tf) para
 # montar a URL de destino do push no ECR e restringir a policy IAM do IRSA.
-ecr_repository_name = "246732148991.dkr.ecr.us-east-1.amazonaws.com/eks-automode-app-dev"
+ecr_repository_name         = "eks-automode-app-dev"
 
 # github_username/github_token (Personal Access Token, escopo "repo") NÃO
 # vão aqui — são consumidos pelo Argo Workflow para dar git push da

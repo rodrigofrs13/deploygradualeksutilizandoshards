@@ -19,4 +19,4 @@
 # https://github.com/settings/tokens e gere um novo.
 
 github_username = "rodrigofrs13"
-github_token     = "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"
+github_token     = "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"

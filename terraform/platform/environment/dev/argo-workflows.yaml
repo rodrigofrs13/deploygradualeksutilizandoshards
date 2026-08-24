@@ -1,0 +1,30 @@
+# values/argo-workflows.yaml
+#
+# UI acessível sem exigir login SSO/client — suficiente para uma Demo local
+# (não use assim em produção). O disparo do build em si continua manual via
+# `argo submit` (ver README) — isso só afeta o acesso à UI/API.
+server:
+  extraArgs:
+    - "--auth-mode=server"
+
+  # Mesmo padrão de exposição do ArgoCD (ver environment/dev/argocd.yaml) —
+  # diferente do argo-cd chart, aqui as chaves ficam no nível raiz de
+  # "server:" (serviceType/serviceAnnotations/loadBalancerClass), não
+  # aninhadas em "server.service.*".
+  serviceType: LoadBalancer
+
+  serviceAnnotations:
+    # "external" é o único valor válido reconhecido pelo controller
+    # embutido do EKS Auto Mode (junto com "nlb-ip", legado).
+    service.beta.kubernetes.io/aws-load-balancer-type: "external"
+    # "ip" é o recomendado com Auto Mode/Karpenter: os targets do NLB
+    # apontam direto para o IP do pod, em vez do IP do node.
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
+    # Só acessível de dentro da VPC (bastion/VPN). Troque para
+    # "internet-facing" se precisar expor publicamente.
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+
+  # Explícito em vez de depender só do default implícito do cluster — deixa
+  # claro no código que o NLB é gerenciado pelo controller nativo do EKS
+  # Auto Mode.
+  loadBalancerClass: "eks.amazonaws.com/nlb"

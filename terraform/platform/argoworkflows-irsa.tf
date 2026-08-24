@@ -31,6 +31,8 @@ locals {
   argo_workflow_sa_name    = "argo-workflow-ecr-push"
   ecr_repository_arn       = "arn:aws:ecr:${var.aws_region}:${data.aws_caller_identity.current.account_id}:repository/${var.ecr_repository_name}"
   ecr_repository_url       = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com/${var.ecr_repository_name}"
+
+                        
 }
 
 data "aws_iam_policy_document" "argo_workflow_assume_role" {
@@ -111,6 +113,50 @@ resource "kubernetes_service_account" "argo_workflow_ecr_push" {
   }
 
   depends_on = [kubernetes_namespace.argo_workflows]
+}
+
+# RBAC mínimo exigido pelo próprio Argo Workflows para QUALQUER
+# ServiceAccount usada como spec.serviceAccountName de um Workflow — sem
+# isso, o passo falha com "workflowtaskresults.argoproj.io is forbidden:
+# ... cannot create resource workflowtaskresults", porque desde a v3.4 o
+# executor (emissary) reporta o resultado de cada passo criando/atualizando
+# um objeto WorkflowTaskResult, em vez de dar patch direto no Pod. O chart
+# argo-workflows cria esse Role/RoleBinding automaticamente só para a
+# ServiceAccount default que ELE gerencia — como usamos uma ServiceAccount
+# própria (por causa do IRSA acima), precisamos conceder isso manualmente.
+# Referência: https://argo-workflows.readthedocs.io/en/latest/workflow-rbac/
+resource "kubernetes_role" "argo_workflow_executor" {
+  metadata {
+    name      = "argo-workflow-executor"
+    namespace = kubernetes_namespace.argo_workflows.metadata[0].name
+  }
+
+  rule {
+    api_groups = ["argoproj.io"]
+    resources  = ["workflowtaskresults"]
+    verbs      = ["create", "patch"]
+  }
+
+  depends_on = [kubernetes_namespace.argo_workflows]
+}
+
+resource "kubernetes_role_binding" "argo_workflow_executor" {
+  metadata {
+    name      = "argo-workflow-executor"
+    namespace = kubernetes_namespace.argo_workflows.metadata[0].name
+  }
+
+  role_ref {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "Role"
+    name      = kubernetes_role.argo_workflow_executor.metadata[0].name
+  }
+
+  subject {
+    kind      = "ServiceAccount"
+    name      = kubernetes_service_account.argo_workflow_ecr_push.metadata[0].name
+    namespace = kubernetes_namespace.argo_workflows.metadata[0].name
+  }
 }
 
 # Credenciais Git (usuário + Personal Access Token) usadas pelo ÚLTIMO passo

@@ -12,6 +12,7 @@ Java/Spring Boot de exemplo cujo deploy é gradual em dois níveis:
   por **ApplicationSet**, que só sincroniza a segunda shard depois de uma
   **aprovação manual**.
 
+
 O disparo de tudo começa com uma mudança em `apps/`: um **Argo Workflow**
 (disparado manualmente, veja "CI: Argo Workflows" abaixo) builda a imagem,
 dá push no ECR e atualiza `apps/springboot/values.yaml` no Git — é esse
@@ -68,6 +69,7 @@ terraform/
       terraform.tfvars
       secrets.tfvars.example   # copie para secrets.tfvars (gitignorado) e preencha
       argocd.yaml
+      argo-workflows.yaml     # values do chart argo-workflows (UI via NLB)
 apps/
   springboot/             # Helm chart da app (usado pelas DUAS shards)
     Chart.yaml / values.yaml
@@ -294,8 +296,9 @@ Disparar manualmente com o [Argo Workflows CLI](https://argo-workflows.readthedo
 argo submit --from workflowtemplate/build-push-springboot -n argo-workflows --watch
 ```
 
-Ou pela UI do Argo Workflows (port-forward, já que ela não tem um
-LoadBalancer dedicado neste projeto):
+Ou pela UI do Argo Workflows — exposta via NLB (veja "Expondo o Argo
+Workflows via LoadBalancer" abaixo) ou, sem esperar o hostname do NLB, via
+port-forward:
 
 ```bash
 kubectl port-forward svc/argo-workflows-server -n argo-workflows 2746:2746
@@ -437,9 +440,37 @@ Ou use `scripts/02-get-argocd-lb-address-and-password.sh` (imprime a senha
 inicial do admin e a URL — assume um binário `jq` no PATH chamado
 `jq-windows-amd64.exe`, ajuste se necessário).
 
-O Argo Workflows, por padrão, **não** tem um Service `LoadBalancer` próprio
-neste projeto — acesse a UI via `kubectl port-forward` (veja "CI: Argo
-Workflows" acima).
+### Expondo o Argo Workflows via LoadBalancer (NLB)
+
+Mesmo padrão do ArgoCD acima, configurado em
+`terraform/platform/environment/dev/argo-workflows.yaml` (chart
+`argo-workflows`, que usa chaves no nível raiz de `server:` em vez de
+`server.service.*`):
+
+```yaml
+server:
+  serviceType: LoadBalancer
+  serviceAnnotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "external"
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internal"
+  loadBalancerClass: "eks.amazonaws.com/nlb"
+```
+
+Diferente do ArgoCD (`internet-facing` por padrão hoje), aqui o `scheme`
+já vem como `internal` — a UI do Argo Workflows dá visibilidade sobre o
+pipeline de build e credenciais de Git/ECR indiretamente, então o padrão é
+só acessível de dentro da VPC (bastion/VPN). Troque para `internet-facing`
+se precisar expor publicamente.
+
+```bash
+kubectl get svc -n argo-workflows argo-workflows-server
+```
+
+O hostname do NLB pode levar alguns minutos para ficar disponível
+(provisionamento assíncrono, igual ao do ArgoCD). A UI do Argo Workflows
+usa HTTPS com certificado autoassinado por padrão — o navegador vai avisar,
+é esperado (aceite o risco/prossiga).
 
 ### Sobre "Argo CD URL: https://null"
 
@@ -615,11 +646,21 @@ de novo, ou destrua com `-target` resource a resource.
   declaradas para não quebrar o `terraform.tfvars` existente; seguro
   remover se quiser limpar.
 - **Storage do workspace do Argo Workflow:** o `WorkflowTemplate` usa um
-  `volumeClaimTemplates` (PVC dinâmico via EBS, provisionado
-  automaticamente pelo EKS Auto Mode) para compartilhar o clone do repo/
-  build entre os passos `clone-repo` → `maven-build` → `kaniko-build-push`
-  → `update-values`, já que cada passo do Argo Workflows roda num Pod
-  separado (um `emptyDir` não sobreviveria entre eles).
+  `volumeClaimTemplates` (PVC dinâmico via EBS) para compartilhar o clone do
+  repo/build entre os passos `clone-repo` → `maven-build` →
+  `kaniko-build-push` → `update-values`, já que cada passo do Argo Workflows
+  roda num Pod separado (um `emptyDir` não sobreviveria entre eles). A
+  StorageClass usada (`auto-ebs-sc`, `storageclass.tf`) **precisa** ser
+  criada manualmente — ao contrário do que o nome "block storage
+  capability" sugere, o EKS Auto Mode **não** cria nenhuma StorageClass
+  sozinho, e usa um provisioner próprio (`ebs.csi.eks.amazonaws.com`, com
+  "eks" no meio) diferente do driver EBS CSI clássico
+  (`ebs.csi.aws.com`, que não roda no Auto Mode). Se você usar a
+  StorageClass `gp2` que já vem em qualquer cluster EKS (CSI migration do
+  provisioner legado `kubernetes.io/aws-ebs` para `ebs.csi.aws.com`), o PVC
+  fica preso pra sempre em `Pending` — sintoma: evento `ExternalProvisioning
+  ... Waiting for a volume to be created by the external provisioner
+  'ebs.csi.aws.com'` seguido de `context deadline exceeded` no bind.
 - Para produção, considere múltiplos NAT Gateways (`single_nat_gateway = false`
   em `vpc.tf`), backend remoto (S3 + DynamoDB) para o state — **de cada
   camada**, já que agora são dois states independentes —, exposição do
