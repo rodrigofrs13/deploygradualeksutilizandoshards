@@ -19,7 +19,7 @@ public class ApplicationController {
     public Map<String, String> home() {
         return Map.of(
             "application", "springboot-sharded-app",
-            "message", "Teste 8",
+            "message", "Teste 9",
             "version", version,
             "shard", shard
         );
