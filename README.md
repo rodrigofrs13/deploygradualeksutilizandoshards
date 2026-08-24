@@ -228,6 +228,11 @@ Os comandos pra acompanhar e promover um rollout (`kubectl argo rollouts
 get`/`promote`) estão no passo a passo com o que esperar em cada um —
 `TESTE-END-TO-END.md`, seções 7 e 11.
 
+`spec.revisionHistoryLimit: 5` limita o histórico a só os 5 `ReplicaSet`
+mais recentes por shard (o padrão do Argo Rollouts, se omitido, é 10) —
+evita acumular `ReplicaSet`s órfãos de deploys/rollbacks antigos no
+namespace.
+
 ### Entre shards: um único ApplicationSet do ArgoCD + aprovação manual
 
 `terraform/platform/argocd-applicationset.tf` define **um único**
