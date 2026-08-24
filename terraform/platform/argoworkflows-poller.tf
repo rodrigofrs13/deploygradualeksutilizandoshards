@@ -17,20 +17,41 @@
 #
 # Como funciona o CronWorkflow "git-poll-trigger" (roda a cada 2 min):
 #   1. check-repo    — `git ls-remote` no branch configurado (repositório
-#                       público, sem credencial) e compara o commit SHA
-#                       atual com o último já processado, lido de um
-#                       ConfigMap "git-poll-state" (montado como volume —
-#                       `optional: true` pra não falhar na primeírissima
-#                       execução, quando o ConfigMap ainda não existe).
-#   2. update-state  — só roda se mudou (`when`): grava o novo SHA no
-#                       ConfigMap "git-poll-state" via `resource: apply`
-#                       (nativo do Argo Workflows, sem precisar de kubectl
-#                       dentro do container).
-#   3. trigger-build — só roda se mudou (`when`): cria um novo `Workflow` a
-#                       partir do MESMO WorkflowTemplate build-push-springboot
-#                       usado pelo `argo submit` manual (argoworkflows-template.tf)
-#                       — reaproveita os parâmetros default definidos lá
-#                       (ecr-repository-url, github-repo-url, git-branch).
+#                       público, sem credencial) pra pegar o SHA atual do
+#                       HEAD, e só considera que "mudou" se, comparado ao
+#                       último SHA já processado (lido de um ConfigMap
+#                       "git-poll-state", montado como volume — `optional:
+#                       true` pra não falhar na primeírissima execução),
+#                       o `git diff --name-only` entre os dois SHAs tiver
+#                       algum arquivo sob `apps/` **além** de
+#                       `apps/springboot/values.yaml` sozinho.
+#
+#                       Duas exclusões deliberadas, ambas pra evitar builds
+#                       desnecessários:
+#                       (a) commit fora de `apps/` (README, Terraform,
+#                           scripts, docs) — não deve rebuildar a imagem;
+#                       (b) commit que só mexe em
+#                           `apps/springboot/values.yaml` — é exatamente o
+#                           arquivo que o PRÓPRIO Workflow reescreve no
+#                           passo `update-values` (bump de
+#                           `image.tag`/commit+push automático, veja
+#                           argoworkflows-template.tf). Sem essa exclusão,
+#                           esse commit automático seria visto como "mudança
+#                           nova" no próximo poll e disparava outro build,
+#                           que faria outro bump, ad infinitum — um LOOP DE
+#                           AUTO-DISPARO (foi exatamente o que causou a
+#                           enxurrada de `git-triggered-build-*` observada
+#                           rodando quase a cada 2 minutos por horas).
+#   2. update-state  — só roda se mudou de verdade (`when`): grava o novo
+#                       SHA no ConfigMap "git-poll-state" via
+#                       `resource: apply` (nativo do Argo Workflows, sem
+#                       precisar de kubectl dentro do container).
+#   3. trigger-build — só roda se mudou de verdade (`when`): cria um novo
+#                       `Workflow` a partir do MESMO WorkflowTemplate
+#                       build-push-springboot usado pelo `argo submit`
+#                       manual (argoworkflows-template.tf) — reaproveita os
+#                       parâmetros default definidos lá (ecr-repository-url,
+#                       github-repo-url, git-branch).
 #
 # ServiceAccount própria e mínima (sem IRSA — este CronWorkflow só lê um
 # repositório público e cria objetos do Kubernetes, nunca fala com o ECR):
@@ -161,10 +182,32 @@ resource "kubectl_manifest" "argo_workflow_poller_cronworkflow" {
                   LATEST=$(git ls-remote "{{workflow.parameters.github-repo-url}}" "refs/heads/{{workflow.parameters.git-branch}}" | awk '{print $1}')
                   LAST=$(cat /state/last-sha 2>/dev/null || echo "")
                   echo "$LATEST" > /tmp/sha
-                  if [ -z "$LATEST" ] || [ "$LATEST" = "$LAST" ]; then
+
+                  if [ -z "$LATEST" ]; then
                     echo "false" > /tmp/changed
-                  else
+                  elif [ "$LATEST" = "$LAST" ]; then
+                    echo "false" > /tmp/changed
+                  elif [ -z "$LAST" ]; then
+                    # Primeira execução (ConfigMap "git-poll-state" ainda não
+                    # existe): não tem SHA anterior pra comparar/diffar,
+                    # builda uma vez só pra estabelecer a baseline.
                     echo "true" > /tmp/changed
+                  else
+                    git clone --quiet --branch "{{workflow.parameters.git-branch}}" \
+                      --single-branch "{{workflow.parameters.github-repo-url}}" /tmp/repo
+                    cd /tmp/repo
+                    CHANGED_FILES=$(git diff --name-only "$LAST" "$LATEST" -- apps/ 2>/dev/null || echo "")
+                    # Ignora se o ÚNICO arquivo alterado sob apps/ for o
+                    # values.yaml que o próprio Workflow reescreve (bump de
+                    # tag) -- ver comentário no topo do arquivo sobre o loop
+                    # de auto-disparo que isso evita.
+                    REAL_CHANGES=$(echo "$CHANGED_FILES" | grep -v -x "apps/springboot/values.yaml" || true)
+                    if [ -n "$REAL_CHANGES" ]; then
+                      echo "true" > /tmp/changed
+                    else
+                      echo "false" > /tmp/changed
+                    fi
+                    echo "arquivos sob apps/ no intervalo: $CHANGED_FILES"
                   fi
                   echo "ultimo processado: '$LAST' -- atual: '$LATEST' -- mudou: $(cat /tmp/changed)"
               volumeMounts:

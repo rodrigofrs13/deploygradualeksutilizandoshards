@@ -336,15 +336,28 @@ tudo roda **dentro do cluster**.
 minutos** e:
 
 1. faz `git ls-remote` no branch configurado (repositório público, sem
-   credencial) e compara o commit SHA atual com o último já processado
-   (guardado num `ConfigMap` `git-poll-state`);
-2. se mudou, grava o novo SHA no `ConfigMap` e cria um novo `Workflow` a
-   partir do mesmo `WorkflowTemplate` `build-push-springboot` usado pelo
-   disparo manual (abaixo) — reaproveitando os parâmetros default definidos
-   nele.
+   credencial) pra pegar o SHA atual do HEAD;
+2. compara com o último SHA já processado (guardado num `ConfigMap`
+   `git-poll-state`) e, se mudou, roda `git diff --name-only` entre os dois
+   SHAs restrito a `apps/` — só considera "mudança de verdade" se sobrar
+   algum arquivo **além** de `apps/springboot/values.yaml` sozinho;
+3. se for mudança de verdade, grava o novo SHA no `ConfigMap` e cria um
+   novo `Workflow` a partir do mesmo `WorkflowTemplate`
+   `build-push-springboot` usado pelo disparo manual (abaixo) —
+   reaproveitando os parâmetros default definidos nele.
 
-Ou seja: depois de um `git push` em `apps/`, o build começa sozinho em até
-2 minutos, sem precisar rodar `argo submit`.
+Ou seja: depois de um `git push` com alteração real em `apps/`, o build
+começa sozinho em até 2 minutos, sem precisar rodar `argo submit`. Dois
+filtros deliberados: (a) commit fora de `apps/` (README, Terraform,
+scripts) não dispara nada; (b) commit que só mexe em
+`apps/springboot/values.yaml` **também não dispara** — esse é exatamente o
+arquivo que o próprio Workflow reescreve no passo `update-values` (bump de
+`image.tag`, commit+push automático). Sem esse segundo filtro, o commit
+automático do próprio pipeline seria visto como "mudança nova" no próximo
+poll e disparava outro build — que faria outro bump, disparando outro
+poll, e assim indefinidamente (foi um bug real observado: dezenas de
+`git-triggered-build-*` rodando a cada ~2 minutos por horas, sem nenhum
+`git push` manual entre eles).
 
 **Por que polling em vez de um webhook do GitHub (Argo Events)?** Foi uma
 escolha deliberada: um webhook dispara instantaneamente, mas exige instalar
@@ -569,6 +582,12 @@ ApplicationSet — só `shard`/`namespace` mudam via
 `spec.source.helm.parameters` (veja "Entre shards" acima). Por isso essa
 única mudança no chart já provisiona **dois** NLBs, um em cada namespace de
 shard (`shard-1`/`shard-2`), sem precisar de nenhum recurso Terraform novo.
+
+**Atenção — é `http://`, não `https://`:** diferente do ArgoCD/Argo
+Workflows (que servem HTTPS com certificado autoassinado), esse Service
+expõe a app Spring Boot em texto puro na porta 80 (sem TLS configurado).
+Acessar com `https://` no hostname do NLB não vai funcionar (nada
+escutando TLS do outro lado) — use sempre `http://`.
 
 `service-canary.yaml` (os pods em canário, ainda não promovidos)
 **continua só `ClusterIP`** de propósito — só a versão já promovida/estável

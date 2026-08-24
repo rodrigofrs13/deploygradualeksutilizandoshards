@@ -531,6 +531,14 @@ risco/prossiga). Veja no README, seções "Expondo o ArgoCD/Argo Workflows
 via LoadBalancer", o significado de cada annotation e os avisos de
 segurança sobre deixar esses NLBs públicos.
 
+**Atenção com a porta:** o Service do Argo Workflows expõe a UI na porta
+**`2746`**, não 80/443 — confirme com `kubectl describe svc
+argo-workflows-server -n argo-workflows` (campo `Port`). Acessar
+`https://<hostname>` sem especificar a porta cai na 443 por padrão do
+navegador/curl e não abre nada (nada escutando lá); o endereço certo é
+`https://<hostname-do-nlb>:2746`. O ArgoCD, por padrão, já expõe em
+`443`/`80`, então não precisa dessa porta extra.
+
 ## Apêndice C: Build e push manual da imagem, sem o Argo Workflow
 
 Alternativa mais rápida ao pipeline completo de 4 passos — útil pra testar
