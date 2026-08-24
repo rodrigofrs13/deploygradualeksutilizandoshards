@@ -50,7 +50,7 @@ aponta pro arquivo a mexer).
 | Promoção do canário dentro de cada shard (Argo Rollouts) | **(A)** `pause` com `duration` fixa (ex.: 60s) — promove sozinho depois do tempo, sem intervenção. **(B)** `pause: {}` (sem duration) — fica parado indefinidamente até `kubectl argo rollouts promote` manual. | **(B) Pausa indefinida / promoção manual** — `apps/springboot/values.yaml` (`canary.steps`) | Requisito explícito do usuário: nenhum canário deve promover sozinho depois de X segundos, nem dentro da shard nem entre shards — aprovação manual nos dois níveis. (A) foi a configuração inicial do projeto, trocada depois desse pedido. |
 | Promoção entre shards (ArgoCD) | **(A)** `syncPolicy.automated` nas duas shards — pipeline totalmente automático fim a fim, sem clique manual entre shard 1 e shard 2. **(B)** `syncPolicy.automated` só na shard-1; shard-2 fica `OutOfSync` até `argocd app sync springboot-shard-2` manual. | **(B) Aprovação manual entre shards** — `terraform/platform/argocd-applicationset.tf` | É o requisito funcional original do desafio ("aprovação manual entre shards via ArgoCD"). (A) chegou a ser implementada e testada (a pedido do usuário, pra automatizar o pipeline fim a fim durante os testes), mas foi revertida depois que o usuário confirmou que o requisito de aprovação manual devia prevalecer. |
 | Acesso à UI do Argo Workflows | **(A)** NLB `internal` — só acessível de dentro da VPC (bastion/VPN). **(B)** NLB `internet-facing` — acessível publicamente pela internet. | **(B) `internet-facing`** — `terraform/platform/environment/dev/argo-workflows.yaml` | Decisão explícita do usuário. Registrado como ponto de atenção no próprio arquivo de values e na seção "Expondo o Argo Workflows via LoadBalancer" abaixo: combinado com `--auth-mode=server` (UI sem login), isso dá controle real sobre o pipeline de CI a qualquer pessoa com o hostname do NLB — aceitável para Demo, não recomendado além disso. |
-| Acesso web às apps rodando nas shards (para testar manualmente) | **(A)** Mais um NLB (por shard ou compartilhado), igual ArgoCD/Argo Workflows. **(B)** `kubectl port-forward` sob demanda. | **(B) `port-forward`** | Escolha do usuário — mais simples pra um teste pontual, sem manter mais um Load Balancer (custo/superfície) rodando só pra acessar a app de exemplo. Ver "Testar a resposta da aplicação" em `TESTE-END-TO-END.md`. |
+| Acesso web às apps rodando nas shards (para testar manualmente) | **(A)** Um NLB por shard, igual ArgoCD/Argo Workflows. **(B)** `kubectl port-forward` sob demanda. | **(A) Um NLB por shard** — `apps/springboot/templates/service-stable.yaml` | Decisão explícita do usuário para eliminar a necessidade de `port-forward`. Como o chart é o mesmo aplicado nas duas shards (só `shard`/`namespace` mudam via o ApplicationSet), essa única mudança já provisiona os dois NLBs — um por namespace de shard. Ver seção "Expondo as apps das shards via LoadBalancer" abaixo. `port-forward` continua documentado em `TESTE-END-TO-END.md` como alternativa/fallback (útil se o hostname do NLB ainda não tiver propagado). |
 | Build da imagem em paralelo ("modo gráfico", inspirado num artigo sobre `withParam`) | **(A)** `withParam` pra buildar N imagens em paralelo (fan-out). **(B)** Manter os 4 passos sequenciais (`steps`) como estão. | **(B) Sequencial, sem paralelismo** | O projeto builda uma única imagem a partir de um único `Dockerfile` — não há múltiplos alvos de build pra paralelizar. `withParam` resolve fan-out sobre uma lista de itens distintos, o que não se aplica aqui. Além disso, qualquer `Workflow` do Argo já renderiza como grafo na UI — não existe um "modo gráfico" separado a habilitar. Descartada por ora ("por enquanto não"), fica registrado caso o projeto cresça pra buildar mais de uma imagem. |
 | Estrutura do ApplicationSet (shard-1/shard-2) | **(A)** Dois `kubectl_manifest` fixos (dois recursos `ApplicationSet`, um por shard). **(B)** Um único `ApplicationSet`, com um generator `list` por shard (cada um com 1 elemento e, se precisar, seu próprio `template` override) em vez de um único generator com 2 elementos. | **(B) Um único `ApplicationSet`** — `terraform/platform/argocd-applicationset.tf` | O requisito pede "**um** ApplicationSet controlando o deploy entre as shards" — (A) tecnicamente usava o recurso certo (`kind: ApplicationSet`), mas eram **dois** objetos, não um. (B) usa um único `ApplicationSet`, com dois generators `list` (não um único generator com 2 elementos): o override de `template` no ArgoCD é por **generator**, não por elemento dentro da lista de um mesmo generator, então variar o `syncPolicy` por shard exige um generator por shard. O generator da shard-1 tem seu próprio `template` (cópia completa — `metadata`/`project`/`source`/`destination`/`syncPolicy`, exigida pelo schema do CRD assim que qualquer `template` de generator existe) sobrescrevendo o `syncPolicy` com `automated`; o da shard-2 não tem `template` nenhum, herdando o template top-level inteiro (sem `automated`) — mesmo resultado de aprovação manual de antes, agora com um único recurso. |
 
@@ -292,6 +292,31 @@ ApplicationSet pra isso, **Progressive Syncs**, `strategy.type:
 RollingSync`) — nenhum dos dois é usado aqui de propósito, porque o
 requisito pede explicitamente aprovação manual em ambos os níveis.
 
+**Sobre a `Application` da shard-2 já aparecer `OutOfSync` com o commit
+novo antes da shard-1 terminar:** isso é esperado e não é um deploy. As
+duas `Application` (`springboot-shard-1`/`springboot-shard-2`) apontam
+para o **mesmo** `targetRevision: HEAD` do mesmo repositório — então assim
+que o Argo Workflow dá `git push` (mesmo com o canário da shard-1 ainda no
+meio do caminho), o ArgoCD atualiza o diff/target da shard-2 pro commit
+novo e ela vira `OutOfSync`. Isso é só comparação (o repo-server buscando o
+Git e comparando com o cluster) — sem `syncPolicy.automated` nesse
+generator, **nada é aplicado**: os pods da shard-2 continuam rodando a
+versão anterior até alguém rodar `argocd app sync springboot-shard-2` de
+verdade.
+
+Dito isso, a ordem "shard-2 só depois que a shard-1 terminar" **não é
+tecnicamente travada** hoje — nada no ApplicationSet impede alguém de
+rodar esse `sync` da shard-2 enquanto a shard-1 ainda está no meio do
+canário; é responsabilidade de quem opera confirmar que a shard-1 chegou a
+100%/`Healthy` (`kubectl argo rollouts status springboot -n shard-1` ou
+`argocd app get springboot-shard-1`) antes de aprovar a shard-2. Foi uma
+escolha deliberada não adicionar uma trava automática aqui (ex.: um script
+que bloqueia o `sync` da shard-2 checando o status da shard-1, ou uma ref
+Git separada por shard promovida por uma etapa nova do Workflow) — para o
+escopo deste desafio, manter os dois níveis como aprovação manual
+(documentada e operada por humano) já atende ao requisito de aprovação
+manual entre shards.
+
 ## CI: Argo Workflows (build + push automático no ECR + atualização do Git)
 
 Sempre que algo muda em `apps/`, um **Argo Workflow** builda a imagem Java,
@@ -516,6 +541,42 @@ O hostname do NLB pode levar alguns minutos para ficar disponível
 usa HTTPS com certificado autoassinado por padrão — o navegador vai avisar,
 é esperado (aceite o risco/prossiga). O comando pra pegar o hostname está
 em `TESTE-END-TO-END.md`, apêndice "Acessar ArgoCD/Argo Workflows via NLB".
+
+### Expondo as apps das shards via LoadBalancer (NLB)
+
+`apps/springboot/templates/service-stable.yaml` (o Service que aponta só
+para os pods **estáveis**, promovidos pelo Argo Rollouts — não para a
+`canary`) está como `type: LoadBalancer`, com o mesmo padrão de anotações
+do ArgoCD/Argo Workflows acima:
+
+```yaml
+annotations:
+  service.beta.kubernetes.io/aws-load-balancer-type: "external"
+  service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
+  service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+spec:
+  type: LoadBalancer
+  loadBalancerClass: eks.amazonaws.com/nlb
+```
+
+Esse chart (`apps/springboot`) é o **mesmo** aplicado nas duas shards pelo
+ApplicationSet — só `shard`/`namespace` mudam via
+`spec.source.helm.parameters` (veja "Entre shards" acima). Por isso essa
+única mudança no chart já provisiona **dois** NLBs, um em cada namespace de
+shard (`shard-1`/`shard-2`), sem precisar de nenhum recurso Terraform novo.
+
+`service-canary.yaml` (os pods em canário, ainda não promovidos)
+**continua só `ClusterIP`** de propósito — só a versão já promovida/estável
+de cada shard fica exposta publicamente; a canary só é acessível via
+`port-forward`, o que é aceitável já que ela existe por pouco tempo durante
+um deploy.
+
+**Atenção — custo e exposição:** isso soma mais dois NLBs `internet-facing`
+aos já existentes (ArgoCD, Argo Workflows) — 4 NLBs no total no ambiente
+`dev`. A aplicação de exemplo não tem autenticação, então qualquer pessoa
+com o hostname consegue acessar os endpoints dela; aceitável para uma
+Demo. Os comandos para pegar o hostname de cada shard e testar a resposta
+da aplicação estão em `TESTE-END-TO-END.md`.
 
 ### Sobre "Argo CD URL: https://null"
 

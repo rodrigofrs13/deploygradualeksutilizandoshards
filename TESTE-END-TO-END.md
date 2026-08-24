@@ -265,20 +265,33 @@ kubectl get node <nome-do-node-acima> --show-labels | grep shard
 
 ## 8. Testar a resposta da aplicação na shard 1
 
+`springboot-stable` é `type: LoadBalancer` (um NLB por shard — veja README,
+seção "Expondo as apps das shards via LoadBalancer"). Pegue o hostname:
+
 ```bash
-kubectl port-forward svc/springboot-stable -n shard-1 8081:80
+kubectl get svc springboot-stable -n shard-1
+# EXTERNAL-IP mostra o hostname do NLB (pode levar 1-2 min pra aparecer
+# depois do apply — provisionamento assíncrono, igual ArgoCD/Argo Workflows)
 ```
 
-Em outro terminal:
-
 ```bash
-curl http://localhost:8081/
+export SHARD1_LB=$(kubectl get svc springboot-stable -n shard-1 -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+curl http://$SHARD1_LB/
 # {"application":"springboot-sharded-app","version":"...","shard":"shard-1"}
-curl http://localhost:8081/health
+curl http://$SHARD1_LB/health
 ```
 
 **Esperado:** `shard` no JSON é `"shard-1"` e `version` bate com o que está
 em `apps/springboot/values.yaml`/`pom.xml`.
+
+Se o hostname do NLB ainda não tiver propagado (DNS/health check do
+target), use `port-forward` como fallback:
+
+```bash
+kubectl port-forward svc/springboot-stable -n shard-1 8081:80
+# em outro terminal:
+curl http://localhost:8081/
+```
 
 ## 9. Confirmar que a shard 2 está aguardando aprovação manual
 
@@ -287,9 +300,13 @@ kubectl get applications -n argocd
 argocd app get springboot-shard-2
 ```
 
-**Esperado:** `springboot-shard-2` aparece como `OutOfSync` — ela **não**
-sincronizou sozinha, mesmo com a shard 1 já saudável. Isso é o gate manual
-funcionando.
+**Esperado:** `springboot-shard-2` aparece como `OutOfSync`, com o diff já
+apontando pro commit novo — isso é normal (ela rastreia o mesmo `HEAD` do
+Git que a shard-1, então o ArgoCD sempre atualiza o diff assim que o Git
+muda). O que importa é que ela **não sincronizou sozinha**: os pods
+continuam na versão anterior até o passo 10. Veja README, seção "Entre
+shards", para a explicação completa dessa distinção entre "diff mostra o
+commit novo" (automático, não é deploy) e "sync de fato" (manual).
 
 ## 10. Aprovar manualmente a promoção para a shard 2
 
@@ -325,9 +342,17 @@ kubectl argo rollouts promote springboot -n shard-2
 **Esperado:** o rollout continua e chega em `SetWeight(100)` → `Healthy`.
 
 ```bash
+kubectl get svc springboot-stable -n shard-2
+export SHARD2_LB=$(kubectl get svc springboot-stable -n shard-2 -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+curl http://$SHARD2_LB/
+# shard deve ser "shard-2"
+```
+
+Fallback, se o hostname ainda não tiver propagado:
+
+```bash
 kubectl port-forward svc/springboot-stable -n shard-2 8082:80
 curl http://localhost:8082/
-# shard deve ser "shard-2"
 ```
 
 ## 12. Validar o isolamento físico entre as shards (taint)

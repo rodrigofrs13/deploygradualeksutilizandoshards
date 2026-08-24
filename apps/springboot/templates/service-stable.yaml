@@ -1,9 +1,31 @@
+# type: LoadBalancer — um NLB por shard, pra acessar a app sem precisar de
+# `kubectl port-forward` (decisão explícita do usuário; veja README, seção
+# "Expondo as apps das shards via LoadBalancer"). Como esse chart é o MESMO
+# aplicado nas duas shards (só shard/namespace mudam via
+# spec.source.helm.parameters no ApplicationSet — argocd-applicationset.tf),
+# essa mudança sozinha já cria DOIS NLBs, um em cada namespace de shard, sem
+# precisar de nenhum Terraform novo.
 apiVersion: v1
 kind: Service
 metadata:
   name: springboot-stable
   namespace: {{ .Values.namespace }}
+  annotations:
+    # Mesmo padrão usado pro ArgoCD/Argo Workflows (terraform/platform/environment/dev/*.yaml):
+    # "external" é o único valor aceito pelo controller nativo do EKS Auto Mode.
+    service.beta.kubernetes.io/aws-load-balancer-type: "external"
+    # "ip" = os targets do NLB apontam direto pro IP do pod (recomendado com
+    # Auto Mode/Karpenter), em vez do IP do node.
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
+    # "internet-facing" = acessível da internet, sem precisar estar na VPC
+    # nem usar port-forward — é o ponto inteiro dessa mudança. Troque para
+    # "internal" se quiser restringir ao acesso interno da VPC.
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
 spec:
+  type: LoadBalancer
+  # Explícito em vez de depender só do default implícito do cluster — deixa
+  # claro que o NLB é gerenciado pelo controller nativo do EKS Auto Mode.
+  loadBalancerClass: eks.amazonaws.com/nlb
   selector:
     app: springboot
     shard: {{ .Values.shard }}
