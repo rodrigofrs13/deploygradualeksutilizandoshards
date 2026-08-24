@@ -19,4 +19,3 @@
 # https://github.com/settings/tokens e gere um novo.
 
 github_username = "rodrigofrs13"
-
