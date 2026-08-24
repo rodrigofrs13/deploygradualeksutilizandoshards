@@ -42,7 +42,7 @@ variable "cluster_log_retention_days" {
 
 variable "ecr_repository_url" {
   type    = string
-  default = "CHANGE-ME.dkr.ecr.us-east-1.amazonaws.com/springboot-sharded-app"
+  default = "246732148991.dkr.ecr.us-east-1.amazonaws.com/eks-automode-app-dev"
 }
 
 variable "git_revision" {
