@@ -3,23 +3,21 @@
 # (var.argocd_apps_path = apps/springboot), com "shard"/"namespace"
 # sobrescritos via spec.source.helm.parameters.
 #
-# ATENÇÃO — decisão deliberada, registrada aqui para não parecer descuido:
-# as DUAS shards têm `syncPolicy.automated` (auto-sync), sem aprovação
-# manual entre elas. Isso DIVERGE do requisito funcional original do
-# desafio ("aprovação manual entre shards via ArgoCD"), que era o
-# comportamento anterior desses dois resources (shard-2 sem
-# `syncPolicy.automated`, exigindo `argocd app sync springboot-shard-2`).
-# A mudança foi um pedido explícito do usuário para tornar o pipeline
-# totalmente automático fim a fim; se for entregar isso como parte de uma
-# avaliação técnica que pede aprovação manual, reverta removendo o bloco
-# `automated` de `argocd_applicationset_shard_2` abaixo (o comentário no
-# resource dela mostra exatamente o que remover).
+# Aprovação manual entre shards (requisito do desafio): só
+# `argocd_applicationset_shard_1` tem `syncPolicy.automated` — sincroniza
+# sozinha assim que o chart mudar no Git. `argocd_applicationset_shard_2`
+# NÃO tem `syncPolicy.automated` de propósito, então fica `OutOfSync` até
+# alguém rodar `argocd app sync springboot-shard-2` (ou o `kubectl patch`
+# equivalente, veja o README) — só depois disso a shard 2 sincroniza e
+# começa o seu próprio canário.
 #
-# Os dois resources continuam sendo dois `kubectl_manifest` fixos (em vez
-# de um único ApplicationSet com list generator de 2 itens) só por
-# simplicidade/consistência com o padrão hardcoded por shard já usado em
-# nodeclasses.tf/nodepools.tf — agora que o syncPolicy é idêntico nas duas,
-# um list generator também funcionaria, mas não há necessidade de refatorar.
+# Os dois resources são dois `kubectl_manifest` fixos (em vez de um único
+# ApplicationSet com list generator de 2 itens) porque o `syncPolicy.automated`
+# da shard-1 precisa existir e o da shard-2 precisa estar TOTALMENTE AUSENTE
+# — e o `goTemplate` do ArgoCD só substitui valores escalares dentro de uma
+# estrutura YAML já válida, não consegue incluir/omitir uma chave YAML
+# inteira condicionalmente. Duas Applications estáticas, cada uma com o
+# `syncPolicy` certo hardcoded, evitam esse problema por completo.
 #
 # O canário DENTRO de cada shard é feito pelo Argo Rollouts (recurso
 # Rollout em apps/springboot/templates/rollout.yaml, com os passos definidos
@@ -70,10 +68,9 @@ resource "kubectl_manifest" "argocd_applicationset_shard_1" {
   ]
 }
 
-# Shard 2 — agora com auto-sync igual à shard-1 (decisão explícita do
-# usuário, ver comentário no topo do arquivo). Para voltar à aprovação
-# manual original do desafio, REMOVA o bloco `automated:` abaixo (mantendo
-# só `syncOptions`), igual era antes.
+# Shard 2 — SEM syncPolicy.automated de propósito (aprovação manual entre
+# shards, requisito do desafio). Fica OutOfSync até `argocd app sync
+# springboot-shard-2` (veja README, seção "Deploy gradual").
 resource "kubectl_manifest" "argocd_applicationset_shard_2" {
   yaml_body = <<-YAML
     apiVersion: argoproj.io/v1alpha1
@@ -105,9 +102,6 @@ resource "kubectl_manifest" "argocd_applicationset_shard_2" {
             server: https://kubernetes.default.svc
             namespace: shard-2
           syncPolicy:
-            automated:
-              prune: true
-              selfHeal: true
             syncOptions:
               - CreateNamespace=true
   YAML

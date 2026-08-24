@@ -12,7 +12,6 @@ Java/Spring Boot de exemplo cujo deploy é gradual em dois níveis:
   por **ApplicationSet**, que só sincroniza a segunda shard depois de uma
   **aprovação manual**.
 
-
 O disparo de tudo começa com uma mudança em `apps/`: um **Argo Workflow**
 (disparado manualmente, veja "CI: Argo Workflows" abaixo) builda a imagem,
 dá push no ECR e atualiza `apps/springboot/values.yaml` no Git — é esse
@@ -194,20 +193,32 @@ com `strategy.canary` apontando para `springboot-stable`/`springboot-canary`
 canary:
   steps:
     - setWeight: 50
-    - pause:
-        duration: 60
+    - pause: {}
     - setWeight: 100
 ```
 
-50% de tráfego → pausa 60s → 100%. A pausa tem duração definida, então o
-canário **avança sozinho** — não precisa de aprovação manual dentro da
-shard (só entre shards, veja abaixo).
+50% de tráfego → **pausa indefinida** → 100%. O `pause` **não tem
+`duration`** de propósito: o Argo Rollouts fica parado em 50% e **não
+promove sozinho depois de X segundos** — é preciso aprovar manualmente
+cada canário, dentro de cada shard (além da aprovação manual entre shards,
+veja abaixo).
 
 Acompanhar um rollout em andamento:
 
 ```bash
 kubectl argo rollouts get rollout springboot -n shard-1 --watch
 ```
+
+Enquanto ele estiver pausado em 50% (`Status: Paused`), promova manualmente
+para 100%:
+
+```bash
+kubectl argo rollouts promote springboot -n shard-1
+# ou, pra pular direto pra 100% sem passar pelos steps seguintes:
+kubectl argo rollouts promote springboot -n shard-1 --full
+```
+
+(troque `shard-1` por `shard-2` quando for promover o canário da shard 2.)
 
 ### Entre shards: duas Applications do ArgoCD + aprovação manual
 
@@ -241,9 +252,15 @@ Fluxo típico de um deploy:
    curto) e atualiza `apps/springboot/values.yaml` com commit/push
    automático.
 3. `springboot-shard-1` sincroniza sozinha → o `Rollout` da shard 1 começa o
-   canário (50% → 100%, ~1 min com os defaults).
+   canário e **pausa em 50%** (`Status: Paused`).
 4. Acompanhe: `kubectl argo rollouts get rollout springboot -n shard-1 --watch`.
-5. Satisfeito com a shard 1, **aprove manualmente** a promoção para a shard 2:
+5. Satisfeito com os 50% na shard 1, **promova manualmente** para 100%:
+
+   ```bash
+   kubectl argo rollouts promote springboot -n shard-1
+   ```
+
+6. Satisfeito com a shard 1 em 100%, **aprove manualmente** a promoção para a shard 2:
 
    ```bash
    argocd app sync springboot-shard-2
@@ -254,15 +271,16 @@ Fluxo típico de um deploy:
 
    (o primeiro comando é o caminho recomendado; o `kubectl patch` é um
    fallback se você não tiver o ArgoCD CLI configurado.)
-6. `springboot-shard-2` sincroniza → o `Rollout` da shard 2 começa o
-   **seu próprio** canário, independente do da shard 1.
+7. `springboot-shard-2` sincroniza → o `Rollout` da shard 2 começa o
+   **seu próprio** canário, independente do da shard 1, e também **pausa em
+   50%** até você rodar `kubectl argo rollouts promote springboot -n shard-2`.
 
 Se quiser progressão automática por etapas com pausas cronometradas em vez
-de um clique manual, o ArgoCD tem um recurso equivalente nativo do
-ApplicationSet chamado **Progressive Syncs** (`strategy.type: RollingSync`)
-— não usado aqui de propósito, porque é uma feature alpha que exige habilitar
-`--enable-progressive-syncs` no `applicationset-controller`, e o requisito
-pede explicitamente uma **aprovação manual** entre shards.
+de aprovação manual — nem dentro do canário (`pause: { duration: ... }` em
+vez de `pause: {}`), nem entre shards (o ArgoCD tem um recurso nativo do
+ApplicationSet pra isso, **Progressive Syncs**, `strategy.type:
+RollingSync`) — nenhum dos dois é usado aqui de propósito, porque o
+requisito pede explicitamente aprovação manual em ambos os níveis.
 
 ## CI: Argo Workflows (build + push automático no ECR + atualização do Git)
 

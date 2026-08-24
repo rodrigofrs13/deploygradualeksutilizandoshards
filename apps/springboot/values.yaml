@@ -9,7 +9,7 @@ replicas: 3
 
 image:
   repository: 246732148991.dkr.ecr.us-east-1.amazonaws.com/eks-automode-app-dev
-  tag: "36f2680"
+  tag: "344f977"
   pullPolicy: IfNotPresent
 
 service:
@@ -17,8 +17,12 @@ service:
   targetPort: 8080
 
 canary:
+  # pause SEM "duration" = pausa indefinida: o Argo Rollouts NÃO promove
+  # sozinho depois de X segundos, fica parado em 50% até alguém rodar
+  # manualmente `kubectl argo rollouts promote springboot -n <shard>`
+  # (ou `... --full` pra pular direto pra 100%). Aprovação manual em TODO
+  # canário, dentro de cada shard — não só entre shards.
   steps:
     - setWeight: 50
-    - pause:
-        duration: 60
+    - pause: {}
     - setWeight: 100

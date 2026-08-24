@@ -211,7 +211,7 @@ novo no histórico com a mensagem `chore: bump image to <tag>
 git log --oneline -3
 ```
 
-## 7. Acompanhar o canário disparado automaticamente na shard 1
+## 7. Acompanhar e promover manualmente o canário na shard 1
 
 ```bash
 kubectl get applications -n argocd
@@ -226,9 +226,16 @@ springboot-shard-1` ou `argocd app get springboot-shard-1 --refresh`).
 kubectl argo rollouts get rollout springboot -n shard-1 --watch
 ```
 
-**Esperado:** o rollout passa por `SetWeight(50)` → pausa de 60s →
-`SetWeight(100)` → `Healthy`, tudo sozinho (sem precisar de comando manual
-— a pausa tem duração fixa).
+**Esperado:** o rollout passa por `SetWeight(50)` e **fica parado em
+`Paused`** — o `pause` não tem `duration`, então o Argo Rollouts **não
+promove sozinho**. É preciso aprovar manualmente:
+
+```bash
+kubectl argo rollouts promote springboot -n shard-1
+```
+
+**Esperado:** o rollout continua e chega em `SetWeight(100)` →
+`Healthy`.
 
 ```bash
 kubectl get pods -n shard-1 -o wide
@@ -287,14 +294,21 @@ kubectl patch application springboot-shard-2 -n argocd --type merge \
 **Esperado:** `springboot-shard-2` muda para `Syncing` e depois
 `Synced`/`Healthy`.
 
-## 11. Acompanhar o canário (independente) na shard 2
+## 11. Acompanhar e promover manualmente o canário (independente) na shard 2
 
 ```bash
 kubectl argo rollouts get rollout springboot -n shard-2 --watch
 ```
 
-**Esperado:** o mesmo padrão da shard 1 (50% → pausa 60s → 100%), rodando
-de forma **independente** do rollout da shard 1 (já concluído).
+**Esperado:** o mesmo padrão da shard 1 — `SetWeight(50)` e **fica parado
+em `Paused`**, rodando de forma **independente** do rollout da shard 1 (já
+concluído). Aprove manualmente:
+
+```bash
+kubectl argo rollouts promote springboot -n shard-2
+```
+
+**Esperado:** o rollout continua e chega em `SetWeight(100)` → `Healthy`.
 
 ```bash
 kubectl port-forward svc/springboot-stable -n shard-2 8082:80
@@ -346,9 +360,11 @@ argo submit --from workflowtemplate/build-push-springboot \
 ```
 
 **Esperado:** uma tag de imagem **nova** (novo commit SHA), a
-`springboot-shard-1` sincroniza e faz o canário de novo automaticamente, e
-a `springboot-shard-2` volta a ficar `OutOfSync` aguardando uma nova
-aprovação manual — repita os passos 7 a 11 para confirmar.
+`springboot-shard-1` sincroniza sozinha e o canário pausa em 50%
+aguardando `kubectl argo rollouts promote`, e a `springboot-shard-2` volta
+a ficar `OutOfSync` aguardando uma nova aprovação manual — repita os passos
+7 a 11 para confirmar (lembrando de promover manualmente o canário em cada
+shard).
 
 ## 14. (Opcional) Abortar/reiniciar um canário durante o teste
 
@@ -390,10 +406,12 @@ terraform destroy -var-file=environment/dev/terraform.tfvars
 - [ ] Pods de `argocd`/`argo-rollouts`/`argo-workflows` rodando
 - [ ] `argo submit` do `build-push-springboot` termina `Succeeded`
 - [ ] Nova tag no ECR + `values.yaml` atualizado + commit novo no Git
-- [ ] `springboot-shard-1` sincroniza sozinha e o canário roda 50%→100%
+- [ ] `springboot-shard-1` sincroniza sozinha e o canário pausa em 50% (`Paused`)
+- [ ] `kubectl argo rollouts promote springboot -n shard-1` leva o canário a 100%
 - [ ] App na shard 1 responde com `"shard":"shard-1"`
 - [ ] `springboot-shard-2` fica `OutOfSync` até aprovação manual
-- [ ] `argocd app sync springboot-shard-2` promove e o canário roda de novo
+- [ ] `argocd app sync springboot-shard-2` promove a Application e o canário roda de novo, pausando em 50%
+- [ ] `kubectl argo rollouts promote springboot -n shard-2` leva o canário a 100%
 - [ ] App na shard 2 responde com `"shard":"shard-2"`
 - [ ] Pod sem toleration fica `Pending` em node da shard (taint funcionando)
 - [ ] Round-trip completo (novo commit → novo build → novo canário) funciona
