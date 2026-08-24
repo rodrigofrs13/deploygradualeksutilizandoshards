@@ -224,22 +224,9 @@ promove sozinho depois de X segundos** — é preciso aprovar manualmente
 cada canário, dentro de cada shard (além da aprovação manual entre shards,
 veja abaixo).
 
-Acompanhar um rollout em andamento:
-
-```bash
-kubectl argo rollouts get rollout springboot -n shard-1 --watch
-```
-
-Enquanto ele estiver pausado em 50% (`Status: Paused`), promova manualmente
-para 100%:
-
-```bash
-kubectl argo rollouts promote springboot -n shard-1
-# ou, pra pular direto pra 100% sem passar pelos steps seguintes:
-kubectl argo rollouts promote springboot -n shard-1 --full
-```
-
-(troque `shard-1` por `shard-2` quando for promover o canário da shard 2.)
+Os comandos pra acompanhar e promover um rollout (`kubectl argo rollouts
+get`/`promote`) estão no passo a passo com o que esperar em cada um —
+`TESTE-END-TO-END.md`, seções 7 e 11.
 
 ### Entre shards: duas Applications do ArgoCD + aprovação manual
 
@@ -265,37 +252,17 @@ inválido antes mesmo do Kubernetes processar o manifest). Duas Applications
 estáticas, cada uma com o `syncPolicy` certo hardcoded, evitam esse
 problema por completo.
 
-Fluxo típico de um deploy:
-
-1. Altere algo em `apps/` (código Java, `Dockerfile`, chart) e dê commit/push.
-2. O Argo Workflow dispara sozinho em até 2 min (`CronWorkflow` de polling,
-   veja "CI: Argo Workflows" abaixo) — ou dispare na hora com `argo submit`
-   se não quiser esperar. Ele builda a imagem, dá push no ECR com uma tag
-   nova (o commit SHA curto) e atualiza `apps/springboot/values.yaml` com
-   commit/push automático.
-3. `springboot-shard-1` sincroniza sozinha → o `Rollout` da shard 1 começa o
-   canário e **pausa em 50%** (`Status: Paused`).
-4. Acompanhe: `kubectl argo rollouts get rollout springboot -n shard-1 --watch`.
-5. Satisfeito com os 50% na shard 1, **promova manualmente** para 100%:
-
-   ```bash
-   kubectl argo rollouts promote springboot -n shard-1
-   ```
-
-6. Satisfeito com a shard 1 em 100%, **aprove manualmente** a promoção para a shard 2:
-
-   ```bash
-   argocd app sync springboot-shard-2
-   # ou, via kubectl apontando pro cluster diretamente, sem precisar da UI do ArgoCD:
-   kubectl patch application springboot-shard-2 -n argocd --type merge \
-     -p '{"operation":{"sync":{"revision":"HEAD"}}}'
-   ```
-
-   (o primeiro comando é o caminho recomendado; o `kubectl patch` é um
-   fallback se você não tiver o ArgoCD CLI configurado.)
-7. `springboot-shard-2` sincroniza → o `Rollout` da shard 2 começa o
-   **seu próprio** canário, independente do da shard 1, e também **pausa em
-   50%** até você rodar `kubectl argo rollouts promote springboot -n shard-2`.
+Fluxo típico de um deploy, em prosa (o passo a passo com todos os comandos
+e o que esperar em cada etapa está em `TESTE-END-TO-END.md`, seções 5 a
+11): uma mudança em `apps/` dispara o Argo Workflow (automático por
+polling ou manual), que builda a imagem, dá push no ECR e atualiza
+`apps/springboot/values.yaml` com commit/push automático → a
+`springboot-shard-1` sincroniza sozinha e o canário da shard 1 pausa em
+50% → promoção manual leva a shard 1 a 100% → só então a promoção da
+shard-2 fica disponível para aprovação manual (`argocd app sync
+springboot-shard-2`) → a `springboot-shard-2` sincroniza e o canário da
+shard 2 (independente do da shard 1) também pausa em 50% até uma nova
+promoção manual.
 
 Se quiser progressão automática por etapas com pausas cronometradas em vez
 de aprovação manual — nem dentro do canário (`pause: { duration: ... }` em
@@ -359,20 +326,10 @@ do CI em si.)
    a `Application` `springboot-shard-1` (`syncPolicy.automated`) detecta e
    sincroniza, disparando o canário descrito acima.
 
-Disparar manualmente com o [Argo Workflows CLI](https://argo-workflows.readthedocs.io/en/latest/walk-through/argo-cli/):
-
-```bash
-argo submit --from workflowtemplate/build-push-springboot -n argo-workflows --watch
-```
-
-Ou pela UI do Argo Workflows — exposta via NLB (veja "Expondo o Argo
-Workflows via LoadBalancer" abaixo) ou, sem esperar o hostname do NLB, via
-port-forward:
-
-```bash
-kubectl port-forward svc/argo-workflows-server -n argo-workflows 2746:2746
-# abra https://localhost:2746 e dispare o WorkflowTemplate build-push-springboot
-```
+Disparo manual: com o [Argo Workflows CLI](https://argo-workflows.readthedocs.io/en/latest/walk-through/argo-cli/)
+(`argo submit --from workflowtemplate/build-push-springboot`) ou pela UI
+(via NLB ou port-forward). Os comandos exatos e o que esperar de cada um
+estão em `TESTE-END-TO-END.md`, seção 5.
 
 ### Autenticação no ECR (IRSA) e no Git
 
@@ -499,15 +456,9 @@ service.beta.kubernetes.io/aws-load-balancer-scheme: "internal"
 ```
 
 O provisionamento do NLB é **assíncrono** — nos primeiros minutos depois do
-apply, o hostname pode ainda não existir:
-
-```bash
-kubectl get svc -n argocd argocd-argocd-server
-```
-
-Ou use `scripts/02-get-argocd-lb-address-and-password.sh` (imprime a senha
-inicial do admin e a URL — assume um binário `jq` no PATH chamado
-`jq-windows-amd64.exe`, ajuste se necessário).
+apply, o hostname pode ainda não existir. Os comandos pra pegar o
+hostname/senha (incluindo o script `scripts/02-get-argocd-lb-address-and-password.sh`)
+estão em `TESTE-END-TO-END.md`, apêndice "Acessar ArgoCD/Argo Workflows via NLB".
 
 ### Expondo o Argo Workflows via LoadBalancer (NLB)
 
@@ -539,14 +490,11 @@ troque para:
 service.beta.kubernetes.io/aws-load-balancer-scheme: "internal"
 ```
 
-```bash
-kubectl get svc -n argo-workflows argo-workflows-server
-```
-
 O hostname do NLB pode levar alguns minutos para ficar disponível
 (provisionamento assíncrono, igual ao do ArgoCD). A UI do Argo Workflows
 usa HTTPS com certificado autoassinado por padrão — o navegador vai avisar,
-é esperado (aceite o risco/prossiga).
+é esperado (aceite o risco/prossiga). O comando pra pegar o hostname está
+em `TESTE-END-TO-END.md`, apêndice "Acessar ArgoCD/Argo Workflows via NLB".
 
 ### Sobre "Argo CD URL: https://null"
 
@@ -563,28 +511,20 @@ configs:
 
 ## Como iniciar (rodar a app localmente, sem o cluster)
 
-Útil para desenvolver/testar a app antes de subir infra:
-
-```bash
-cd apps
-mvn spring-boot:run
-# ou: mvn clean package -DskipTests && java -jar target/springboot-sharded-app-1.0.0.jar
-```
-
-```bash
-curl http://localhost:8080/
-# {"application":"springboot-sharded-app","version":"1.0.0","shard":"unknown"}
-curl http://localhost:8080/health
-curl http://localhost:8080/actuator/health/readiness
-```
-
-`APP_VERSION`/`APP_SHARD` (env vars, ver `Dockerfile`/`rollout.yaml`)
-alimentam `app.version`/`app.shard` (`application.properties`) — em
-produção cada shard reporta o próprio nome em `/`.
+Útil para desenvolver/testar a app antes de subir infra: `cd apps && mvn
+spring-boot:run` sobe a aplicação Spring Boot local, sem depender de
+nenhuma parte da infra AWS/Kubernetes. `APP_VERSION`/`APP_SHARD` (env vars,
+ver `Dockerfile`/`rollout.yaml`) alimentam `app.version`/`app.shard`
+(`application.properties`) — em produção cada shard reporta o próprio nome
+em `/`; localmente, sem essas env vars, `shard` aparece como `"unknown"`.
+Os comandos completos (incluindo os `curl` de verificação) estão em
+`TESTE-END-TO-END.md`, apêndice "Testar a app localmente, sem o cluster".
 
 ## Como provisionar
 
-Ordem sempre **infra primeiro, platform depois**:
+Ordem sempre **infra primeiro, platform depois** — o passo a passo
+completo com todos os comandos, o que esperar em cada etapa e como
+resolver os problemas mais comuns está em `TESTE-END-TO-END.md`. Resumo:
 
 ```bash
 # Etapa 1 — infraestrutura AWS (VPC, IAM, cluster EKS, ECR)
@@ -612,63 +552,19 @@ Isso cria a VPC, o cluster EKS com Auto Mode, os dois NodePools shard
 (isolados por taint), o repositório ECR e instala o ArgoCD + Argo Rollouts +
 Argo Workflows nos namespaces `argocd`, `argo-rollouts` e `argo-workflows`
 — além do `AppProject`, das duas `Application` (`springboot-shard-1`/
-`springboot-shard-2`) e do `WorkflowTemplate` `build-push-springboot`.
-
-Configurar o kubectl:
-
-```bash
-aws eks update-kubeconfig --region us-east-1 --name eks-automode-dev
-```
-
-Publicar a primeira imagem e disparar o primeiro deploy (veja "CI: Argo
-Workflows" acima):
-
-```bash
-argo submit --from workflowtemplate/build-push-springboot -n argo-workflows --watch
-```
-
-Verificar os NodePools, NodeClasses e as Applications geradas:
-
-```bash
-kubectl get nodepools
-kubectl get nodeclasses
-kubectl get applications -n argocd
-```
-
-Acessar o ArgoCD via NLB (se o hostname já estiver disponível — veja
-"Expondo o ArgoCD via LoadBalancer" acima) ou via port-forward:
-
-```bash
-kubectl port-forward svc/argocd-argocd-server -n argocd 8080:443
-kubectl -n argocd get secret argocd-initial-admin-secret \
-  -o jsonpath="{.data.password}" | base64 -d; echo
-```
-
-Login: `admin` / senha acima, em https://localhost:8080
+`springboot-shard-2`), do `WorkflowTemplate` `build-push-springboot` e do
+`CronWorkflow` `git-poll-trigger`.
 
 ## Build e push manual da imagem (alternativa ao Argo Workflow)
 
-Útil para testar rapidamente sem passar pelo pipeline completo:
-
-```bash
-# Linux/macOS
-./scripts/build-push.sh 1.0.0
-
-# Windows
-./scripts/build-push.ps1 -Tag 1.0.0
-```
-
-Sobrescreva `ECR_REPOSITORY`/`AWS_REGION` (bash) ou `-Repository`/`-Region`
-(PowerShell) se o seu ambiente usar outro nome/região — o `terraform.tfvars`
-de dev usa `eks-automode-app-dev`, por exemplo.
-
-⚠️ O repositório ECR é criado com `image_tag_mutability = IMMUTABLE`
-(`terraform/infra/ecr.tf`) — cada push precisa de uma tag **nova** (ex.:
-`1.0.1`, `1.0.2`...); tentar sobrescrever uma tag já publicada falha. Depois
-do push, atualize `image.tag`/`image.repository` em
-`apps/springboot/values.yaml` manualmente e dê commit/push para disparar o
-deploy gradual descrito acima (o Argo Workflow faz esses dois últimos
-passos automaticamente).
+`scripts/build-push.sh`/`build-push.ps1` fazem o build Maven e o
+build+push da imagem Docker direto no ECR, sem passar pelo Argo Workflow —
+útil pra testar uma mudança rapidamente sem esperar os 4 passos do
+pipeline completo. Diferença importante: os scripts **não** atualizam
+`apps/springboot/values.yaml` nem dão commit/push (o Argo Workflow faz
+isso automaticamente no passo `update-values`) — depois de usar os
+scripts, esse passo fica por sua conta. Os comandos de uso estão em
+`TESTE-END-TO-END.md`, apêndice "Build e push manual da imagem".
 
 ## Logs do control plane
 
@@ -676,15 +572,11 @@ Os 5 tipos de log do control plane estão habilitados (`api`, `audit`,
 `authenticator`, `controllerManager`, `scheduler`), enviados para o log group
 `/aws/eks/<cluster_name>/cluster` no CloudWatch, com retenção configurável em
 `var.cluster_log_retention_days` (no `terraform.tfvars` de dev atual: **1
-dia** — ajuste para produção).
-
-```bash
-aws logs tail /aws/eks/eks-automode-dev/cluster --follow
-```
-
-Isso cobre apenas os logs do **control plane**. Logs de aplicação (stdout dos
-pods) não passam por aqui — no EKS Auto Mode, use algo como o CloudWatch
-Observability add-on ou um DaemonSet de coleta (Fluent Bit) para isso.
+dia** — ajuste para produção). Isso cobre apenas os logs do **control
+plane**. Logs de aplicação (stdout dos pods) não passam por aqui — no EKS
+Auto Mode, use algo como o CloudWatch Observability add-on ou um DaemonSet
+de coleta (Fluent Bit) para isso. O comando pra visualizar os logs está em
+`TESTE-END-TO-END.md`, apêndice "Ver logs do control plane".
 
 ## Como destruir o ambiente
 
@@ -741,7 +633,9 @@ de novo, ou destrua com `-target` resource a resource.
   em `vpc.tf`), backend remoto (S3 + DynamoDB) para o state — **de cada
   camada**, já que agora são dois states independentes —, exposição do
   ArgoCD/Argo Workflows via Ingress/ALB com TLS e HA (`redis-ha.enabled = true`,
-  mais réplicas no `argocd.yaml`), e um gatilho automático (Argo Events +
-  webhook do GitHub, por exemplo) em vez do disparo manual do Argo Workflow.
+  mais réplicas no `argocd.yaml`), e trocar o disparo automático por
+  polling (`argoworkflows-poller.tf`) por Argo Events + webhook do GitHub
+  se precisar de disparo instantâneo em vez de até 2 min de atraso (veja
+  "Decisões de arquitetura" acima).
 - Instâncias Spot podem ser interrompidas pela AWS a qualquer momento — não
   use os shards para workloads stateful sem tolerância a disrupção.

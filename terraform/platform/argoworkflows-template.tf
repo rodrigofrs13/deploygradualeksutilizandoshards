@@ -167,7 +167,7 @@ resource "kubectl_manifest" "argo_workflow_template" {
                 git config user.email "argo-workflows@cluster.local"
                 git config user.name "argo-workflows"
                 git add apps/springboot/values.yaml
-                git commit -m "chore: bump image to {{inputs.parameters.image-tag}} [argo-workflows]" || echo "nada para commitar"
+                git commit -m "Commit: bump image to {{inputs.parameters.image-tag}} [argo-workflows]" || echo "nada para commitar"
                 REPO_URL="{{workflow.parameters.github-repo-url}}"
                 PUSH_URL="https://$${GIT_USERNAME}:$${GIT_TOKEN}@$${REPO_URL#https://}"
                 git push "$PUSH_URL" "HEAD:{{workflow.parameters.git-branch}}"
