@@ -1,9 +1,12 @@
 # Teste fim a fim
 
 Passo a passo para validar o fluxo completo: provisionar tudo do zero,
-disparar o Argo Workflow, acompanhar o canário na shard 1, aprovar
-manualmente a promoção para a shard 2, e confirmar que o isolamento físico
-das shards funciona de verdade. Os comandos assumem os valores padrão de
+disparar o Argo Workflow (automaticamente, via polling do Git, ou
+manualmente — este runbook usa o disparo manual pra não depender de
+esperar o próximo ciclo de polling), acompanhar o canário na shard 1,
+aprovar manualmente a promoção para a shard 2, e confirmar que o isolamento
+físico das shards funciona de verdade. Os comandos assumem os valores
+padrão de
 `environment/dev` (`cluster_name = eks-automode-dev`, `aws_region =
 us-east-1`, `ecr_repository_name = eks-automode-app-dev`) — ajuste se você
 mudou algo.
@@ -142,10 +145,21 @@ Abra https://localhost:8080, login `admin` + a senha impressa acima.
 
 ## 5. Disparar o Argo Workflow (build + push + atualização do Git)
 
+Desde `argoworkflows-poller.tf`, isso acontece **sozinho**: um
+`CronWorkflow` (`git-poll-trigger`) roda a cada 2 min, detecta que o Git
+mudou e dispara o build automaticamente — não seria necessário rodar nada
+aqui. Mas para este teste guiado, dispare manualmente pra não depender de
+esperar até 2 min pelo próximo ciclo de polling:
+
 ```bash
 argo submit --from workflowtemplate/build-push-springboot \
   -n argo-workflows --watch
 ```
+
+(Se quiser confirmar o disparo automático em vez do manual, pule este
+comando e espere até 2 min — depois rode `argo list -n argo-workflows` e
+veja um Workflow novo com o prefixo `git-triggered-build-` aparecer
+sozinho.)
 
 Acompanhe os 4 passos no terminal (`clone-repo` → `maven-build` →
 `kaniko-build-push` → `update-values`). Isso demora uns 3-5 min (o build
@@ -352,15 +366,35 @@ git commit -m "teste: valida pipeline fim a fim"
 git push
 ```
 
-Dispare o Argo Workflow de novo:
+Desta vez **não dispare manualmente** — esse é o teste do disparo
+automático. Espere até 2 min (o intervalo do `CronWorkflow` de polling) e
+confirme que um Workflow novo apareceu sozinho:
+
+```bash
+kubectl get cronworkflow git-poll-trigger -n argo-workflows
+argo list -n argo-workflows
+```
+
+**Esperado:** um `Workflow` novo com o prefixo `git-triggered-build-`
+(diferente do nome que `argo submit` gera) aparece sozinho, sem você ter
+rodado nenhum comando de disparo. Se quiser ver os logs do próprio
+`CronWorkflow` decidindo disparar:
+
+```bash
+kubectl get configmap git-poll-state -n argo-workflows -o jsonpath='{.data.last-sha}'; echo
+argo logs @latest -n argo-workflows -c check-repo
+```
+
+Se depois de uns 3 minutos nenhum Workflow novo apareceu, dispare
+manualmente pra não travar o teste e investigue o `CronWorkflow` depois:
 
 ```bash
 argo submit --from workflowtemplate/build-push-springboot \
   -n argo-workflows --watch
 ```
 
-**Esperado:** uma tag de imagem **nova** (novo commit SHA), a
-`springboot-shard-1` sincroniza sozinha e o canário pausa em 50%
+**Esperado (de qualquer forma):** uma tag de imagem **nova** (novo commit
+SHA), a `springboot-shard-1` sincroniza sozinha e o canário pausa em 50%
 aguardando `kubectl argo rollouts promote`, e a `springboot-shard-2` volta
 a ficar `OutOfSync` aguardando uma nova aprovação manual — repita os passos
 7 a 11 para confirmar (lembrando de promover manualmente o canário em cada
@@ -415,3 +449,4 @@ terraform destroy -var-file=environment/dev/terraform.tfvars
 - [ ] App na shard 2 responde com `"shard":"shard-2"`
 - [ ] Pod sem toleration fica `Pending` em node da shard (taint funcionando)
 - [ ] Round-trip completo (novo commit → novo build → novo canário) funciona
+- [ ] `git-poll-trigger` (CronWorkflow) dispara sozinho um `git-triggered-build-*` sem `argo submit` manual

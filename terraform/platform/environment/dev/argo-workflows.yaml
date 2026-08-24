@@ -1,8 +1,18 @@
 # values/argo-workflows.yaml
 #
-# UI acessível sem exigir login SSO/client — suficiente para uma Demo local
-# (não use assim em produção). O disparo do build em si continua manual via
-# `argo submit` (ver README) — isso só afeta o acesso à UI/API.
+# ATENÇÃO — combinação de dois pontos, cada um decisão explícita do usuário,
+# mas que juntos merecem cuidado:
+#   1. UI/API acessível sem exigir login SSO/client (--auth-mode=server).
+#   2. NLB "internet-facing" (acesso público, não só de dentro da VPC) —
+#      veja serviceAnnotations abaixo.
+# Junto, isso significa que QUALQUER PESSOA com o hostname do NLB consegue
+# ver e SUBMETER/ABORTAR Workflows (inclusive o build-push-springboot) sem
+# autenticação nenhuma — não é só "ver a UI", é controle real sobre o
+# cluster de CI. Aceitável para uma Demo/teste de curta duração; para
+# qualquer uso além disso, o mínimo recomendado é voltar
+# aws-load-balancer-scheme para "internal" (abaixo) e/ou trocar
+# --auth-mode=server por SSO (veja a doc do Argo Workflows sobre
+# server.sso).
 server:
   extraArgs:
     - "--auth-mode=server"
@@ -20,8 +30,9 @@ server:
     # "ip" é o recomendado com Auto Mode/Karpenter: os targets do NLB
     # apontam direto para o IP do pod, em vez do IP do node.
     service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
-    # Só acessível de dentro da VPC (bastion/VPN). Troque para
-    # "internet-facing" se precisar expor publicamente.
+    # "internet-facing" = acesso público, alcançável de fora da VPC (não só
+    # de bastion/VPN). Decisão explícita do usuário — troque para "internal"
+    # se precisar restringir de novo ao acesso interno da VPC.
     service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
 
   # Explícito em vez de depender só do default implícito do cluster — deixa

@@ -13,7 +13,8 @@ Java/Spring Boot de exemplo cujo deploy é gradual em dois níveis:
   **aprovação manual**.
 
 O disparo de tudo começa com uma mudança em `apps/`: um **Argo Workflow**
-(disparado manualmente, veja "CI: Argo Workflows" abaixo) builda a imagem,
+(disparado automaticamente por polling em até 2 min, veja "CI: Argo
+Workflows" abaixo — ou manualmente, se não quiser esperar) builda a imagem,
 dá push no ECR e atualiza `apps/springboot/values.yaml` no Git — é esse
 commit que o ArgoCD detecta e sincroniza automaticamente na shard 1,
 iniciando o canário.
@@ -35,6 +36,24 @@ iniciando o canário.
 | Helm para empacotamento | `apps/springboot` (chart da app) + ArgoCD/Argo Rollouts/Argo Workflows instalados via `helm_release` |
 | README com visão geral, como iniciar, provisionar e destruir | este arquivo |
 
+## Decisões de arquitetura e alternativas consideradas
+
+Ao longo do projeto, alguns pontos tinham mais de uma forma razoável de
+resolver. A tabela abaixo registra as opções que foram apresentadas, qual
+foi escolhida e por quê — para não parecer que a alternativa não foi
+considerada, e para facilitar reverter caso o contexto mude (cada linha
+aponta pro arquivo a mexer).
+
+| Decisão | Opções consideradas | Escolhida | Por quê |
+|---|---|---|---|
+| Disparo do build (Argo Workflow) após `git push` | **(A)** Argo Events + webhook do GitHub — instantâneo, mas exige instalar mais componentes (`EventBus`/`EventSource`/`Sensor`) e expor um endpoint HTTP alcançável pelo GitHub pela internet. **(B)** `CronWorkflow` com polling (`git ls-remote` a cada 2 min). **(C)** Só manual (`argo submit`), sem nenhum disparo automático. | **(B) CronWorkflow com polling** — `terraform/platform/argoworkflows-poller.tf` | Não precisa expor nenhum endpoint novo à internet nem instalar componentes novos: é sempre o cluster puxando informação do GitHub (saída), nunca o GitHub entrando no cluster (entrada). Troca instantaneidade (que a opção A daria) por menos superfície de exposição — para uma Demo, o atraso de até 2 min é irrelevante. (C) foi descartada porque o objetivo explícito era eliminar o `argo submit` manual. |
+| Promoção do canário dentro de cada shard (Argo Rollouts) | **(A)** `pause` com `duration` fixa (ex.: 60s) — promove sozinho depois do tempo, sem intervenção. **(B)** `pause: {}` (sem duration) — fica parado indefinidamente até `kubectl argo rollouts promote` manual. | **(B) Pausa indefinida / promoção manual** — `apps/springboot/values.yaml` (`canary.steps`) | Requisito explícito do usuário: nenhum canário deve promover sozinho depois de X segundos, nem dentro da shard nem entre shards — aprovação manual nos dois níveis. (A) foi a configuração inicial do projeto, trocada depois desse pedido. |
+| Promoção entre shards (ArgoCD) | **(A)** `syncPolicy.automated` nas duas shards — pipeline totalmente automático fim a fim, sem clique manual entre shard 1 e shard 2. **(B)** `syncPolicy.automated` só na shard-1; shard-2 fica `OutOfSync` até `argocd app sync springboot-shard-2` manual. | **(B) Aprovação manual entre shards** — `terraform/platform/argocd-applicationset.tf` | É o requisito funcional original do desafio ("aprovação manual entre shards via ArgoCD"). (A) chegou a ser implementada e testada (a pedido do usuário, pra automatizar o pipeline fim a fim durante os testes), mas foi revertida depois que o usuário confirmou que o requisito de aprovação manual devia prevalecer. |
+| Acesso à UI do Argo Workflows | **(A)** NLB `internal` — só acessível de dentro da VPC (bastion/VPN). **(B)** NLB `internet-facing` — acessível publicamente pela internet. | **(B) `internet-facing`** — `terraform/platform/environment/dev/argo-workflows.yaml` | Decisão explícita do usuário. Registrado como ponto de atenção no próprio arquivo de values e na seção "Expondo o Argo Workflows via LoadBalancer" abaixo: combinado com `--auth-mode=server` (UI sem login), isso dá controle real sobre o pipeline de CI a qualquer pessoa com o hostname do NLB — aceitável para Demo, não recomendado além disso. |
+| Acesso web às apps rodando nas shards (para testar manualmente) | **(A)** Mais um NLB (por shard ou compartilhado), igual ArgoCD/Argo Workflows. **(B)** `kubectl port-forward` sob demanda. | **(B) `port-forward`** | Escolha do usuário — mais simples pra um teste pontual, sem manter mais um Load Balancer (custo/superfície) rodando só pra acessar a app de exemplo. Ver "Testar a resposta da aplicação" em `TESTE-END-TO-END.md`. |
+| Build da imagem em paralelo ("modo gráfico", inspirado num artigo sobre `withParam`) | **(A)** `withParam` pra buildar N imagens em paralelo (fan-out). **(B)** Manter os 4 passos sequenciais (`steps`) como estão. | **(B) Sequencial, sem paralelismo** | O projeto builda uma única imagem a partir de um único `Dockerfile` — não há múltiplos alvos de build pra paralelizar. `withParam` resolve fan-out sobre uma lista de itens distintos, o que não se aplica aqui. Além disso, qualquer `Workflow` do Argo já renderiza como grafo na UI — não existe um "modo gráfico" separado a habilitar. Descartada por ora ("por enquanto não"), fica registrado caso o projeto cresça pra buildar mais de uma imagem. |
+| Estrutura do ApplicationSet (shard-1/shard-2) | **(A)** Um único `ApplicationSet` com `generators.list` de 2 itens (shard-1/shard-2), usando `goTemplate` pra variar `shard`/`namespace`. **(B)** Dois `kubectl_manifest` fixos, um por shard. | **(B) Dois `kubectl_manifest` fixos** — `terraform/platform/argocd-applicationset.tf` | O `syncPolicy.automated` precisa existir na shard-1 e estar **totalmente ausente** na shard-2 (não só com um valor diferente) — e o `goTemplate` do ArgoCD só substitui valores escalares dentro de uma estrutura YAML já válida, não inclui/omite uma chave inteira condicionalmente. Duas Applications estáticas evitam esse problema por completo. |
+
 ## Pré-requisitos
 
 - Terraform >= 1.4.4
@@ -44,7 +63,7 @@ iniciando o canário.
   Identity Provider para o cluster), ECR
 - `kubectl` + [plugin do Argo Rollouts](https://argo-rollouts.readthedocs.io/en/stable/installation/#kubectl-plugin-installation) (`kubectl argo rollouts`), útil para acompanhar o canário
 - [ArgoCD CLI](https://argo-cd.readthedocs.io/en/stable/cli_installation/) (`argocd`), útil para dar a aprovação manual entre shards
-- [Argo Workflows CLI](https://argo-workflows.readthedocs.io/en/latest/walk-through/argo-cli/) (`argo`), usado para disparar manualmente o build+push da imagem (veja "CI: Argo Workflows" abaixo)
+- [Argo Workflows CLI](https://argo-workflows.readthedocs.io/en/latest/walk-through/argo-cli/) (`argo`), opcional — só necessário se quiser disparar/acompanhar o build+push manualmente em vez de esperar o `CronWorkflow` de polling (veja "CI: Argo Workflows" abaixo)
 - Um Personal Access Token do GitHub (escopo `repo`) para o Argo Workflow conseguir dar `git push` de volta no repositório
 - Maven e Docker (só para `scripts/build-push.*`, se quiser buildar a app manualmente, sem o Argo Workflow)
 
@@ -64,6 +83,7 @@ terraform/
     argocd.tf / argocd-github-secret.tf / argocd-project.tf / argocd-applicationset.tf
     argorollouts.tf
     argoworkflows.tf / argoworkflows-irsa.tf / argoworkflows-template.tf
+    argoworkflows-poller.tf  # CronWorkflow: dispara o build sozinho via polling do Git
     environment/dev/       # cópia própria (independente da de infra/) — veja Notas
       terraform.tfvars
       secrets.tfvars.example   # copie para secrets.tfvars (gitignorado) e preencha
@@ -109,6 +129,7 @@ scripts/
 - `argoworkflows.tf` — instalação do Argo Workflows via Helm (namespace `argo-workflows`)
 - `argoworkflows-irsa.tf` — IAM OIDC Identity Provider do cluster + role/policy IRSA (push no ECR) + ServiceAccount + Secret de credenciais Git
 - `argoworkflows-template.tf` — `WorkflowTemplate` com os passos de build+push+atualização do Git
+- `argoworkflows-poller.tf` — `CronWorkflow` que faz polling do Git a cada 2 min e dispara o `build-push-springboot` sozinho quando detecta um commit novo (dispensa `argo submit` manual)
 - `outputs.tf` — endpoint, ARNs, URL do ECR e comando do kubectl (camada infra)
 
 ## Camadas do Terraform: `infra` e `platform`
@@ -247,10 +268,11 @@ problema por completo.
 Fluxo típico de um deploy:
 
 1. Altere algo em `apps/` (código Java, `Dockerfile`, chart) e dê commit/push.
-2. Dispare o Argo Workflow manualmente (veja "CI: Argo Workflows" abaixo) —
-   ele builda a imagem, dá push no ECR com uma tag nova (o commit SHA
-   curto) e atualiza `apps/springboot/values.yaml` com commit/push
-   automático.
+2. O Argo Workflow dispara sozinho em até 2 min (`CronWorkflow` de polling,
+   veja "CI: Argo Workflows" abaixo) — ou dispare na hora com `argo submit`
+   se não quiser esperar. Ele builda a imagem, dá push no ECR com uma tag
+   nova (o commit SHA curto) e atualiza `apps/springboot/values.yaml` com
+   commit/push automático.
 3. `springboot-shard-1` sincroniza sozinha → o `Rollout` da shard 1 começa o
    canário e **pausa em 50%** (`Status: Paused`).
 4. Acompanhe: `kubectl argo rollouts get rollout springboot -n shard-1 --watch`.
@@ -287,9 +309,38 @@ requisito pede explicitamente aprovação manual em ambos os níveis.
 Sempre que algo muda em `apps/`, um **Argo Workflow** builda a imagem Java,
 dá push no ECR e atualiza `apps/springboot/values.yaml` no Git — sem depender
 de GitHub Actions nem de nenhum OIDC/secret configurado no lado do GitHub:
-tudo roda **dentro do cluster**, disparado **manualmente** (não há Argo
-Events/webhook nenhum "escutando" o repositório — mais simples para uma
-Demo).
+tudo roda **dentro do cluster**.
+
+### Disparo automático (padrão): CronWorkflow com polling
+
+`terraform/platform/argoworkflows-poller.tf` define um `CronWorkflow`
+(`git-poll-trigger`, namespace `argo-workflows`) que roda a **cada 2
+minutos** e:
+
+1. faz `git ls-remote` no branch configurado (repositório público, sem
+   credencial) e compara o commit SHA atual com o último já processado
+   (guardado num `ConfigMap` `git-poll-state`);
+2. se mudou, grava o novo SHA no `ConfigMap` e cria um novo `Workflow` a
+   partir do mesmo `WorkflowTemplate` `build-push-springboot` usado pelo
+   disparo manual (abaixo) — reaproveitando os parâmetros default definidos
+   nele.
+
+Ou seja: depois de um `git push` em `apps/`, o build começa sozinho em até
+2 minutos, sem precisar rodar `argo submit`.
+
+**Por que polling em vez de um webhook do GitHub (Argo Events)?** Foi uma
+escolha deliberada: um webhook dispara instantaneamente, mas exige instalar
+mais componentes (Argo Events: `EventBus`/`EventSource`/`Sensor`) e expor
+um endpoint HTTP nesse EventSource alcançável pelo GitHub pela internet. O
+polling não precisa de nenhum endpoint novo — é sempre o cluster puxando
+informação do GitHub (saída), nunca o GitHub entrando no cluster (entrada).
+Troca-se instantaneidade por menos superfície de exposição; para uma Demo,
+o atraso de até 2 minutos é irrelevante. (A UI do Argo Workflows, à parte
+disso, **já está** exposta publicamente — veja "Expondo o Argo Workflows
+via LoadBalancer" abaixo — mas isso é uma decisão independente do disparo
+do CI em si.)
+
+### Disparo manual (opcional, para não esperar o polling)
 
 `terraform/platform/argoworkflows-template.tf` define o `WorkflowTemplate`
 `build-push-springboot` (namespace `argo-workflows`) com os passos:
@@ -471,15 +522,22 @@ server:
   serviceAnnotations:
     service.beta.kubernetes.io/aws-load-balancer-type: "external"
     service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
-    service.beta.kubernetes.io/aws-load-balancer-scheme: "internal"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
   loadBalancerClass: "eks.amazonaws.com/nlb"
 ```
 
-Diferente do ArgoCD (`internet-facing` por padrão hoje), aqui o `scheme`
-já vem como `internal` — a UI do Argo Workflows dá visibilidade sobre o
-pipeline de build e credenciais de Git/ECR indiretamente, então o padrão é
-só acessível de dentro da VPC (bastion/VPN). Troque para `internet-facing`
-se precisar expor publicamente.
+**Atenção — `scheme: internet-facing` (NLB público) é uma decisão explícita
+do usuário**, e combinada com `--auth-mode=server` (UI/API sem exigir login
+SSO, veja acima) significa que **qualquer pessoa com o hostname do NLB
+consegue ver e submeter/abortar Workflows sem autenticação** — não é só
+visualizar a UI, é controle real sobre o pipeline de CI (inclusive
+disparar/abortar o `build-push-springboot`). Aceitável para uma Demo/teste
+de curta duração; se precisar restringir de novo ao acesso interno da VPC,
+troque para:
+
+```yaml
+service.beta.kubernetes.io/aws-load-balancer-scheme: "internal"
+```
 
 ```bash
 kubectl get svc -n argo-workflows argo-workflows-server
