@@ -1,0 +1,113 @@
+# values/argocd.yaml
+global:
+  # TODO: troque pelo domínio real (ex.: argocd.dev.seudominio.com.br).
+  # "example.com" é reservado pela IANA e nunca resolve de verdade — usado
+  # aqui só como placeholder até você ter um domínio/Route53 apontando para
+  # o hostname do NLB (output argocd_load_balancer_hostname).
+  domain: argocd.internal.example.com
+
+  # Fallback: garante que qualquer componente novo/futuro que ainda não
+  # tenha nodeSelector explícito abaixo caia no general-purpose por
+  # padrão, e não nos shards Spot (dedicados às aplicações dos usuários).
+  nodeSelector:
+    karpenter.sh/nodepool: general-purpose
+
+configs:
+  params:
+    # ArgoCD server segue servindo TLS na própria aplicação. Como a
+    # exposição é via NLB (Layer 4, passthrough) e não via ALB/Ingress
+    # (Layer 7), o TLS tem que terminar no pod mesmo.
+    server.insecure: false
+  cm:
+    timeout.reconciliation: 180s
+    application.instanceLabelKey: argocd.argoproj.io/instance
+
+controller:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      memory: 2Gi
+  # -- defaults to global.nodeSelector; explícito aqui por clareza.
+  nodeSelector:
+    karpenter.sh/nodepool: general-purpose
+
+server:
+  replicas: 1
+
+  service:
+    type: LoadBalancer
+
+    # Campos confirmados no values.yaml oficial do chart (server.service.*)
+    annotations:
+      # "external" é o único valor válido reconhecido pelo controller
+      # embutido do EKS Auto Mode (junto com "nlb-ip", legado). O valor
+      # "nlb" usado antes é do cloud-provider in-tree legado, que não
+      # funciona no Auto Mode — por isso o NLB nunca ficava pronto.
+      service.beta.kubernetes.io/aws-load-balancer-type: "external"
+      # "ip" é o recomendado com Auto Mode/Karpenter: os targets do NLB
+      # apontam direto para o IP do pod, em vez do IP do node — evita
+      # quebra quando o Karpenter troca/recicla nodes.
+      service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
+      # Só acessível de dentro da VPC (bastion/VPN). Troque para
+      # "internet-facing" se precisar expor publicamente.
+      service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+
+    # Explícito em vez de depender só do default implícito do cluster —
+    # deixa claro no código que o NLB é gerenciado pelo controller nativo
+    # do EKS Auto Mode.
+    loadBalancerClass: "eks.amazonaws.com/nlb"
+
+    # Recomendado pela AWS para NLB com target-type "ip": preserva o IP
+    # real do cliente e evita um hop de rede extra. Sem isso (default
+    # "Cluster"), o Argo CD veria o IP do node em vez do IP do usuário.
+    externalTrafficPolicy: Local
+
+  # Ingress desabilitado: a exposição deste ambiente é via Service
+  # type=LoadBalancer (NLB). Ter os dois ativos ao mesmo tempo cria dois
+  # pontos de entrada concorrentes para o mesmo domínio.
+  ingress:
+    enabled: false
+
+  # -- defaults to global.nodeSelector; explícito aqui por clareza.
+  nodeSelector:
+    karpenter.sh/nodepool: general-purpose
+
+repoServer:
+  replicas: 1
+  # -- defaults to global.nodeSelector; explícito aqui por clareza.
+  nodeSelector:
+    karpenter.sh/nodepool: general-purpose
+
+applicationSet:
+  # -- defaults to global.nodeSelector; explícito aqui por clareza.
+  nodeSelector:
+    karpenter.sh/nodepool: general-purpose
+
+notifications:
+  # -- defaults to global.nodeSelector; explícito aqui por clareza.
+  nodeSelector:
+    karpenter.sh/nodepool: general-purpose
+
+dex:
+  enabled: false
+  # -- mantido por consistência, mesmo com dex desabilitado.
+  nodeSelector:
+    karpenter.sh/nodepool: general-purpose
+
+redis:
+  enabled: true
+
+redis-ha:
+  enabled: false
+  # ATENÇÃO: este subchart (DandyDeveloper/redis-ha) usa nodeSelector como
+  # chave de nível RAIZ do subchart — não "redis-ha.redis.nodeSelector"
+  # nem "redis-ha.haproxy.nodeSelector". O caminho abaixo é o correto,
+  # confirmado no template do chart (.Values.nodeSelector).
+  # OBS: antes tínhamos setado "redis.nodeSelector" via Terraform, o que
+  # não tinha efeito nenhum, já que redis.enabled=false e quem roda de
+  # fato é o redis-ha.
+  nodeSelector:
+    karpenter.sh/nodepool: general-purpose

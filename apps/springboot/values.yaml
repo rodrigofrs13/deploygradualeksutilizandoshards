@@ -1,0 +1,24 @@
+# Default para "helm template"/"helm install" manual, sem o ArgoCD. Em
+# produção, o ApplicationSet (terraform/platform/argocd-applicationset.tf)
+# sobrescreve os dois por shard via spec.source.helm.parameters — precisam
+# bater com o label/taint "shard" dos NodePools (terraform/platform/nodepools.tf).
+shard: shard-1
+namespace: shard-1
+
+replicas: 3
+
+image:
+  repository: CHANGE-ME.dkr.ecr.us-east-1.amazonaws.com/springboot-sharded-app
+  tag: "1.0.0"
+  pullPolicy: IfNotPresent
+
+service:
+  port: 80
+  targetPort: 8080
+
+canary:
+  steps:
+    - setWeight: 50
+    - pause:
+        duration: 60
+    - setWeight: 100

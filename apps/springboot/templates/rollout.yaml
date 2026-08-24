@@ -1,0 +1,67 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: springboot
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: springboot
+    shard: {{ .Values.shard }}
+spec:
+  replicas: {{ .Values.replicas }}
+
+  selector:
+    matchLabels:
+      app: springboot
+      shard: {{ .Values.shard }}
+
+  template:
+    metadata:
+      labels:
+        app: springboot
+        shard: {{ .Values.shard }}
+
+    spec:
+      nodeSelector:
+        shard: {{ .Values.shard }}
+
+      tolerations:
+        - key: shard
+          operator: Equal
+          value: {{ .Values.shard }}
+          effect: NoSchedule
+
+      containers:
+        - name: springboot
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+
+          ports:
+            - containerPort: 8080
+
+          env:
+            - name: APP_VERSION
+              value: "{{ .Values.image.tag }}"
+            - name: APP_SHARD
+              value: "{{ .Values.shard }}"
+
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 10
+
+  strategy:
+    canary:
+      stableService: springboot-stable
+      canaryService: springboot-canary
+
+      steps:
+{{ toYaml .Values.canary.steps | indent 8 }}
