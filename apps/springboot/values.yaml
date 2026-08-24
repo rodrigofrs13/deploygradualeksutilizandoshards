@@ -10,9 +10,9 @@ replicas: 3
 image:
   repository: 246732148991.dkr.ecr.us-east-1.amazonaws.com/eks-automode-app-dev
 <<<<<<< HEAD
-  tag: "344f977"
+  tag: "ff0416d"
 =======
-  tag: "e50b764"
+  tag: "ff0416d"
 >>>>>>> 12a1fded63e4da5ab4cd3bd9fcc72cea267f0d32
   pullPolicy: IfNotPresent
 
