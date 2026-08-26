@@ -1,5 +1,5 @@
 terraform {
-  required_version = ">= 1.4.4"
+  required_version = ">= 1.7.0"
 
   required_providers {
     # Único provider usado nesta camada — VPC, IAM, EKS (só o resource do

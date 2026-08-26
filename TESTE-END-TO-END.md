@@ -39,7 +39,7 @@ tudo (`aws configure` ou variáveis `AWS_*`).
 ## 1. Provisionar a camada `infra`
 
 ```bash
-cd terraform/infra
+cd terraform/infra 
 terraform init
 terraform apply -var-file=environment/dev/terraform.tfvars
 ```
@@ -64,7 +64,7 @@ aws eks describe-cluster --name eks-automode-dev --region us-east-1 \
 
 ```bash
 cd ../platform
-cp environment/dev/secrets.tfvars.example environment/dev/secrets.tfvars
+vim environment/dev/secrets.tfvars
 ```
 
 Edite `environment/dev/secrets.tfvars` e preencha:
@@ -136,14 +136,16 @@ Isso se resolve no próximo passo, quando o Argo Workflow corrige a imagem.
 Acesse a UI do ArgoCD para acompanhar visualmente (opcional, mas útil):
 
 ```bash
-kubectl port-forward svc/argocd-argocd-server -n argocd 8080:443
-kubectl -n argocd get secret argocd-initial-admin-secret \
-  -o jsonpath="{.data.password}" | base64 -d; echo
+sh 'deploygradualeksutilizandoshards/scripts/02-get-argocd-lb-address-and-password.sh'
+Argo CD admin password: xxx
+Argo CD URL: xxx
 ```
 
-Abra https://localhost:8080, login `admin` + a senha impressa acima.
+Abra a URL, login `admin` + a senha impressa acima.
 
 ## 5. Disparar o Argo Workflow (build + push + atualização do Git)
+
+TODO - Pegar o dns do workflow
 
 Desde `argoworkflows-poller.tf`, isso acontece **sozinho**: um
 `CronWorkflow` (`git-poll-trigger`) roda a cada 2 min, detecta que o Git
