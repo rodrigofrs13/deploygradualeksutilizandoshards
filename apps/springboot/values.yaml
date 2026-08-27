@@ -9,7 +9,7 @@ replicas: 40
 
 image:
   repository: 246732148991.dkr.ecr.us-east-1.amazonaws.com/eks-automode-app-dev
-  tag: "fd5fb22"
+  tag: "a735c03"
 
 
 service:
