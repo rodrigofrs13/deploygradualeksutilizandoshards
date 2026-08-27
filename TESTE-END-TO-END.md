@@ -161,7 +161,7 @@ mudou e dispara o build automaticamente — não seria necessário rodar nada aq
 Mas para este teste guiado, dispare manualmente pra não depender de esperar até 2 min pelo próximo ciclo de polling:
 
 ```bash
-argo submit --from workflowtemplate/build-push-springboot -n argo-workflows --watch
+argocd submit --from workflowtemplate/build-push-springboot -n argo-workflows --watch
 ```
 
 (Se quiser confirmar o disparo automático em vez do manual, pule este
@@ -178,7 +178,7 @@ primeira execução).
 falhar, veja os logs dele especificamente:
 
 ```bash
-argo logs @latest -n argo-workflows
+argocd logs @latest -n argo-workflows
 ```
 
 Causas comuns de falha: `git push` rejeitado (verifique
