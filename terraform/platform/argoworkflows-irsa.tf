@@ -32,7 +32,7 @@ locals {
   ecr_repository_arn       = "arn:aws:ecr:${var.aws_region}:${data.aws_caller_identity.current.account_id}:repository/${var.ecr_repository_name}"
   ecr_repository_url       = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com/${var.ecr_repository_name}"
 
-                        
+
 }
 
 data "aws_iam_policy_document" "argo_workflow_assume_role" {
@@ -157,6 +157,89 @@ resource "kubernetes_role_binding" "argo_workflow_executor" {
     name      = kubernetes_service_account.argo_workflow_ecr_push.metadata[0].name
     namespace = kubernetes_namespace.argo_workflows.metadata[0].name
   }
+}
+
+# RBAC extra para o gate de aprovação entre shard-1 e shard-2 (ver
+# argoworkflows-template.tf, steps wait-shard1-healthy / sync-shard2): a
+# mesma ServiceAccount do pipeline de build precisa (1) ler o status do
+# Rollout da shard-1 e (2) dar patch na Application da shard-2.
+
+# (1) Leitura do Rollout via CLUSTER ROLE, de propósito — não um
+# "kubernetes_role" namespaced. Os namespaces shard-1/shard-2 só existem
+# depois do PRIMEIRO sync do ArgoCD (ver README, "Estrutura"/seção 3 do
+# TESTE-END-TO-END.md); um Role apontando para um namespace que ainda não
+# existe falharia no primeiro "terraform apply" da camada platform. Um
+# ClusterRole/ClusterRoleBinding não referencia nenhum namespace
+# específico, então não tem esse problema de ordering — o preço é que a
+# permissão de leitura de Rollout vale pra qualquer namespace, não só
+# shard-1/shard-2 (aceitável: é só leitura de status).
+resource "kubernetes_cluster_role" "argo_workflow_rollouts_reader" {
+  metadata {
+    name = "${var.cluster_name}-argo-workflow-rollouts-reader"
+  }
+
+  rule {
+    api_groups = ["argoproj.io"]
+    resources  = ["rollouts", "rollouts/status"]
+    verbs      = ["get", "list", "watch"]
+  }
+}
+
+resource "kubernetes_cluster_role_binding" "argo_workflow_rollouts_reader" {
+  metadata {
+    name = "${var.cluster_name}-argo-workflow-rollouts-reader"
+  }
+
+  role_ref {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "ClusterRole"
+    name      = kubernetes_cluster_role.argo_workflow_rollouts_reader.metadata[0].name
+  }
+
+  subject {
+    kind      = "ServiceAccount"
+    name      = kubernetes_service_account.argo_workflow_ecr_push.metadata[0].name
+    namespace = kubernetes_namespace.argo_workflows.metadata[0].name
+  }
+}
+
+# (2) Patch na Application da shard-2 — Role namespaced normal, sem o
+# problema de ordering acima: o namespace "argocd" já existe desde o início
+# (argocd.tf), bem antes deste recurso.
+resource "kubernetes_role" "argo_workflow_argocd_sync" {
+  metadata {
+    name      = "argo-workflow-argocd-sync"
+    namespace = "argocd"
+  }
+
+  rule {
+    api_groups = ["argoproj.io"]
+    resources  = ["applications"]
+    verbs      = ["get", "patch"]
+  }
+
+  depends_on = [helm_release.argocd]
+}
+
+resource "kubernetes_role_binding" "argo_workflow_argocd_sync" {
+  metadata {
+    name      = "argo-workflow-argocd-sync"
+    namespace = "argocd"
+  }
+
+  role_ref {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "Role"
+    name      = kubernetes_role.argo_workflow_argocd_sync.metadata[0].name
+  }
+
+  subject {
+    kind      = "ServiceAccount"
+    name      = kubernetes_service_account.argo_workflow_ecr_push.metadata[0].name
+    namespace = kubernetes_namespace.argo_workflows.metadata[0].name
+  }
+
+  depends_on = [helm_release.argocd]
 }
 
 # Credenciais Git (usuário + Personal Access Token) usadas pelo ÚLTIMO passo
