@@ -27,8 +27,7 @@ resource "helm_release" "argo_rollouts" {
   wait    = true
   timeout = 900
 
-  # Evita ficar com state "sujo" se a instalação falhar (mesma proteção já
-  # usada em argocd.tf).
+  # Evita ficar com state "sujo" se a instalação falhar (mesma proteção já usada em argocd.tf).
   cleanup_on_fail = true
 
   depends_on = [

@@ -96,6 +96,24 @@ resource "aws_iam_role_policy" "argo_workflow_ecr_push" {
   policy = data.aws_iam_policy_document.argo_workflow_ecr_push.json
 }
 
+# Permissão extra pro step check-cloudwatch-alarm (argoworkflows-template.tf,
+# desafio extra de promoção automática): só leitura do estado do alarme
+# criado em cloudwatch-alarm.tf, restrita ao ARN dele especificamente (não
+# "cloudwatch:*" nem "resources = [*]").
+data "aws_iam_policy_document" "argo_workflow_cloudwatch_read" {
+  statement {
+    sid       = "CloudWatchAlarmRead"
+    actions   = ["cloudwatch:DescribeAlarms"]
+    resources = [aws_cloudwatch_metric_alarm.springboot_shard1_health.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "argo_workflow_cloudwatch_read" {
+  name   = "cloudwatch-alarm-read"
+  role   = aws_iam_role.argo_workflow_ecr_push.id
+  policy = data.aws_iam_policy_document.argo_workflow_cloudwatch_read.json
+}
+
 # ServiceAccount usada pelo WorkflowTemplate (spec.serviceAccountName em
 # argoworkflows-template.tf) — o annotation abaixo é o que o webhook nativo
 # do EKS usa para injetar AWS_ROLE_ARN/AWS_WEB_IDENTITY_TOKEN_FILE nos pods,
@@ -159,20 +177,22 @@ resource "kubernetes_role_binding" "argo_workflow_executor" {
   }
 }
 
-# RBAC extra para o gate de aprovação entre shard-1 e shard-2 (ver
-# argoworkflows-template.tf, steps wait-shard1-healthy / sync-shard2): a
-# mesma ServiceAccount do pipeline de build precisa (1) ler o status do
-# Rollout da shard-1 e (2) dar patch na Application da shard-2.
+# RBAC extra para o gate de aprovação/promoção entre shard-1 e shard-2 (ver
+# argoworkflows-template.tf, steps wait-shard1-healthy / rollback-shard1 /
+# sync-shard2): a mesma ServiceAccount do pipeline de build precisa (1) ler
+# e (agora) abortar o Rollout da shard-1, e (2) dar patch na Application da
+# shard-2.
 
-# (1) Leitura do Rollout via CLUSTER ROLE, de propósito — não um
+# (1) Leitura + abort do Rollout via CLUSTER ROLE, de propósito — não um
 # "kubernetes_role" namespaced. Os namespaces shard-1/shard-2 só existem
 # depois do PRIMEIRO sync do ArgoCD (ver README, "Estrutura"/seção 3 do
 # TESTE-END-TO-END.md); um Role apontando para um namespace que ainda não
 # existe falharia no primeiro "terraform apply" da camada platform. Um
 # ClusterRole/ClusterRoleBinding não referencia nenhum namespace
 # específico, então não tem esse problema de ordering — o preço é que a
-# permissão de leitura de Rollout vale pra qualquer namespace, não só
-# shard-1/shard-2 (aceitável: é só leitura de status).
+# permissão vale pra qualquer namespace, não só shard-1/shard-2 (aceitável:
+# é só o CRD do Argo Rollouts, e o "patch" fica restrito ao subresource
+# "status", usado só pelo abort).
 resource "kubernetes_cluster_role" "argo_workflow_rollouts_reader" {
   metadata {
     name = "${var.cluster_name}-argo-workflow-rollouts-reader"
@@ -180,8 +200,18 @@ resource "kubernetes_cluster_role" "argo_workflow_rollouts_reader" {
 
   rule {
     api_groups = ["argoproj.io"]
-    resources  = ["rollouts", "rollouts/status"]
+    resources  = ["rollouts"]
     verbs      = ["get", "list", "watch"]
+  }
+
+  # Necessário pro step rollback-shard1 (kubectl patch --subresource
+  # status): sem esse rule extra, o patch falha com "rollouts/status is
+  # forbidden" mesmo já tendo "get" no recurso principal — subresources têm
+  # RBAC próprio, independente do recurso "pai".
+  rule {
+    api_groups = ["argoproj.io"]
+    resources  = ["rollouts/status"]
+    verbs      = ["get", "patch", "update"]
   }
 }
 

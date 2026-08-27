@@ -1,53 +1,66 @@
 # WorkflowTemplate reutilizável: build+push da imagem no ECR (Kaniko),
 # atualização de apps/springboot/values.yaml no Git, e a promoção
-# controlada entre shards. Disparo é sempre MANUAL (não há Argo
-# Events/webhook nenhum "escutando" o repositório) — veja o comando
-# `argo submit` no README.
+# controlada entre shards — manual OU automática via CloudWatch Alarm,
+# escolhido em tempo de execução por um campo do PRÓPRIO
+# apps/springboot/values.yaml (promotion.automaticApproval). Disparo do
+# Workflow em si continua sempre MANUAL/por polling (veja
+# argoworkflows-poller.tf) — não há Argo Events/webhook nenhum "escutando"
+# o repositório.
 #
-# Passos (spec.templates.build-and-deploy.steps):
+# spec.templates.build-and-deploy é um DAG (não "steps") de propósito: a
+# partir do passo 5 o fluxo se ramifica (automático vs. manual) e as duas
+# ramificações convergem de volta num único "promote-shard2" — isso é mais
+# natural de expressar com dependências (depends/when) do que com uma
+# lista sequencial de "steps".
+#
+# Tarefas (spec.templates.build-and-deploy.dag.tasks):
 #   1. clone-repo             — clona var.github_repo_url (público) num
 #                                volume compartilhado entre os passos (PVC,
 #                                não emptyDir, porque cada passo do Argo
-#                                Workflows roda num Pod separado) e captura
-#                                o commit SHA curto como tag da imagem.
-#   2. maven-build            — `mvn clean package` dentro de apps/, gerando
-#                                apps/target/springboot-sharded-app-1.0.0.jar
-#                                (o Dockerfile só copia o jar, não builda a
-#                                app — por isso o build Maven precisa rodar
-#                                ANTES do Kaniko).
+#                                Workflows roda num Pod separado); captura
+#                                o commit SHA curto (tag da imagem) e
+#                                também lê promotion.automaticApproval /
+#                                promotion.cloudWatchAlarmName do
+#                                values.yaml recém-clonado — assim o resto
+#                                do Workflow decide o caminho sem precisar
+#                                de mais nenhum step só pra isso.
+#   2. maven-build            — `mvn clean package` dentro de apps/.
 #   3. kaniko-build-push      — builda apps/Dockerfile com Kaniko e dá push
-#                                no ECR usando a tag do passo 1. SEM
-#                                Docker-in-Docker.
+#                                no ECR. SEM Docker-in-Docker.
 #   4. update-values          — atualiza image.repository/image.tag em
 #                                apps/springboot/values.yaml e dá git
-#                                commit+push — é esse push que o ArgoCD
-#                                (syncPolicy.automated só na shard-1,
-#                                argocd-applicationset.tf) detecta e
-#                                sincroniza, disparando o canário na shard 1.
+#                                commit+push — dispara o sync automático da
+#                                shard-1 no ArgoCD.
 #   5. wait-shard1-healthy    — espera o Rollout da shard-1 chegar a
-#                                "Healthy" (ou seja, até você terminar de
-#                                promover manualmente os 4 estágios do
-#                                canário — apps/springboot/values.yaml,
-#                                canary.steps). Antes deste step, nada
-#                                impedia rodar o sync da shard-2 com a
-#                                shard-1 ainda no meio do canário (ver
-#                                README, "Entre shards").
-#   6. approve-shard2-promotion — gate de aprovação manual de verdade:
-#                                template "suspend: {}" nativo do Argo
-#                                Workflows. O Workflow fica parado
-#                                (Running/Suspended) até alguém rodar
-#                                `argo resume <nome-do-workflow> -n
-#                                argo-workflows`. Equivalente, dentro do
-#                                pipeline, ao "pause: {}" sem duration do
-#                                Argo Rollouts — nenhuma promoção automática
-#                                por tempo.
-#   7. sync-shard2            — só depois do resume: dá
+#                                "Healthy" (canário promovido a 100%
+#                                manualmente por você, com
+#                                `kubectl argo rollouts promote`).
+#   6a. check-cloudwatch-alarm — SÓ roda se promotion.automaticApproval
+#                                for "true": consulta o StateValue do
+#                                alarme (cloudwatch-alarm.tf) via AWS CLI.
+#   6b. approve-shard2-promotion — SÓ roda se automaticApproval for
+#                                "false": template "suspend: {}" nativo do
+#                                Argo Workflows — fica parado até alguém
+#                                clicar "Resume" na UI (ou `argo resume`).
+#   7a. promote-shard2         — roda depois de 6a com estado "OK", OU
+#                                depois de 6b aprovado: dá
 #                                `kubectl patch application
 #                                springboot-shard-2` (mesmo comando
-#                                fallback documentado em
-#                                TESTE-END-TO-END.md), disparando o sync e,
-#                                com isso, o canário (independente) da
-#                                shard 2.
+#                                fallback documentado no
+#                                TESTE-END-TO-END.md).
+#   7b. rollback-shard1        — roda depois de 6a com estado != "OK"
+#                                (ALARM ou INSUFFICIENT_DATA — fail
+#                                closed): aborta o Rollout da shard-1 via
+#                                patch no subresource status, devolvendo
+#                                100% do tráfego pra versão anterior
+#                                (stable) sem precisar de novo commit.
+#
+# ATENÇÃO: a combinação depends/when das tarefas 6-7 (pra fazer as duas
+# ramificações convergirem em promote-shard2, mesmo com uma delas sempre
+# "Skipped") é a parte mais delicada desse arquivo — funciona pela lógica
+# do Argo Workflows, mas não foi validada rodando de verdade. Teste os 3
+# cenários (automático=OK, automático=ALARM, manual) antes de confiar nisso
+# em qualquer coisa que não seja este ambiente de teste.
 resource "kubectl_manifest" "argo_workflow_template" {
   yaml_body = <<-YAML
     apiVersion: argoproj.io/v1alpha1
@@ -91,29 +104,76 @@ resource "kubectl_manifest" "argo_workflow_template" {
 
       templates:
         - name: build-and-deploy
-          steps:
-            - - name: clone-repo
+          dag:
+            tasks:
+              - name: clone-repo
                 template: clone-repo
-            - - name: maven-build
+
+              - name: maven-build
+                depends: "clone-repo"
                 template: maven-build
-            - - name: kaniko-build-push
+
+              - name: kaniko-build-push
+                depends: "maven-build"
                 template: kaniko-build-push
                 arguments:
                   parameters:
                     - name: image-tag
-                      value: "{{steps.clone-repo.outputs.parameters.image-tag}}"
-            - - name: update-values
+                      value: "{{tasks.clone-repo.outputs.parameters.image-tag}}"
+
+              - name: update-values
+                depends: "kaniko-build-push"
                 template: update-values
                 arguments:
                   parameters:
                     - name: image-tag
-                      value: "{{steps.clone-repo.outputs.parameters.image-tag}}"
-            - - name: wait-shard1-healthy
+                      value: "{{tasks.clone-repo.outputs.parameters.image-tag}}"
+
+              - name: wait-shard1-healthy
+                depends: "update-values"
                 template: wait-shard1-healthy
-            - - name: approve-shard2-promotion
+
+              # Só executa se promotion.automaticApproval == "true" no
+              # values.yaml clonado no passo 1.
+              - name: check-cloudwatch-alarm
+                depends: "wait-shard1-healthy"
+                template: check-cloudwatch-alarm
+                arguments:
+                  parameters:
+                    - name: alarm-name
+                      value: "{{tasks.clone-repo.outputs.parameters.alarm-name}}"
+                when: "{{tasks.clone-repo.outputs.parameters.auto-approval}} == true"
+
+              # Só executa se promotion.automaticApproval == "false".
+              - name: approve-shard2-promotion
+                depends: "wait-shard1-healthy"
                 template: approve-shard2-promotion
-            - - name: sync-shard2
+                when: "{{tasks.clone-repo.outputs.parameters.auto-approval}} == false"
+
+              # Converge as duas ramificações: dispara se o alarme veio OK
+              # (caminho automático) OU se a aprovação manual foi resumida
+              # com sucesso (caminho manual). O "|| *.Skipped" em cada lado
+              # do "depends" é necessário porque exatamente uma das duas
+              # tarefas acima sempre fica Skipped (quando o "when" dela é
+              # falso) — sem isso, o depends padrão (que exige Succeeded)
+              # nunca seria satisfeito.
+              - name: promote-shard2
+                depends: >-
+                  (check-cloudwatch-alarm.Succeeded || check-cloudwatch-alarm.Skipped)
+                  && (approve-shard2-promotion.Succeeded || approve-shard2-promotion.Skipped)
                 template: sync-shard2
+                when: >-
+                  {{tasks.check-cloudwatch-alarm.outputs.parameters.state}} == OK
+                  || {{tasks.approve-shard2-promotion.status}} == Succeeded
+
+              # Só entra na jogada se check-cloudwatch-alarm de fato rodou
+              # (senão, no modo manual, ela fica Skipped e esta tarefa
+              # também é automaticamente pulada — comportamento desejado,
+              # rollback automático não deve existir no modo manual).
+              - name: rollback-shard1
+                depends: "check-cloudwatch-alarm"
+                template: rollback-shard1
+                when: "{{tasks.check-cloudwatch-alarm.outputs.parameters.state}} != OK"
 
         - name: clone-repo
           outputs:
@@ -121,6 +181,12 @@ resource "kubectl_manifest" "argo_workflow_template" {
               - name: image-tag
                 valueFrom:
                   path: /tmp/image-tag
+              - name: auto-approval
+                valueFrom:
+                  path: /tmp/auto-approval
+              - name: alarm-name
+                valueFrom:
+                  path: /tmp/alarm-name
           container:
             image: alpine/git:2.45.2
             command: ["sh", "-c"]
@@ -131,6 +197,16 @@ resource "kubectl_manifest" "argo_workflow_template" {
                 git clone --depth 1 --branch "{{workflow.parameters.git-branch}}" "{{workflow.parameters.github-repo-url}}" /workspace/repo
                 cd /workspace/repo
                 git rev-parse --short HEAD > /tmp/image-tag
+
+                # Lê o toggle manual/automático direto do values.yaml
+                # recém-clonado (apps/springboot/values.yaml,
+                # bloco "promotion:") — dá pra trocar de modo só com um
+                # commit, sem reaplicar Terraform.
+                AUTO=$(grep -A2 '^promotion:' apps/springboot/values.yaml 2>/dev/null | grep 'automaticApproval:' | awk '{print $2}')
+                ALARM=$(grep -A2 '^promotion:' apps/springboot/values.yaml 2>/dev/null | grep 'cloudWatchAlarmName:' | awk '{print $2}' | tr -d '"')
+                echo "promotion.automaticApproval lido do values.yaml: $${AUTO:-<vazio, tratando como false>}"
+                echo -n "$${AUTO:-false}" > /tmp/auto-approval
+                echo -n "$${ALARM:-}" > /tmp/alarm-name
             volumeMounts:
               - name: workspace
                 mountPath: /workspace
@@ -210,11 +286,9 @@ resource "kubectl_manifest" "argo_workflow_template" {
 
         - name: wait-shard1-healthy
           # Sem "activeDeadlineSeconds" de propósito: o operador ainda
-          # precisa promover manualmente cada um dos 4 estágios do canário
-          # da shard-1 (kubectl argo rollouts promote springboot -n
-          # shard-1), o que pode levar o tempo que for necessário — mesma
-          # filosofia do "pause: {}" sem duration em
-          # apps/springboot/values.yaml.
+          # precisa promover manualmente os 2 estágios do canário da
+          # shard-1 (kubectl argo rollouts promote springboot -n shard-1),
+          # o que pode levar o tempo que for necessário.
           container:
             image: alpine/k8s:1.30.0
             command: ["sh", "-c"]
@@ -228,7 +302,38 @@ resource "kubectl_manifest" "argo_workflow_template" {
                   [ "$PHASE" = "Healthy" ] && break
                   sleep 15
                 done
-                echo "Shard-1 está Healthy — pronto para aprovar a promoção da shard-2."
+                echo "Shard-1 está Healthy."
+
+        - name: check-cloudwatch-alarm
+          inputs:
+            parameters:
+              - name: alarm-name
+          outputs:
+            parameters:
+              - name: state
+                valueFrom:
+                  path: /tmp/alarm-state
+          container:
+            image: alpine/k8s:1.30.0
+            command: ["sh", "-c"]
+            args:
+              - |
+                set -e
+                ALARM_NAME="{{inputs.parameters.alarm-name}}"
+                if [ -z "$ALARM_NAME" ]; then
+                  echo "promotion.cloudWatchAlarmName não configurado no values.yaml — tratando como INSUFFICIENT_DATA (fail-closed)." >&2
+                  echo -n "INSUFFICIENT_DATA" > /tmp/alarm-state
+                  exit 0
+                fi
+                STATE=$(aws cloudwatch describe-alarms \
+                  --alarm-names "$ALARM_NAME" --region "${var.aws_region}" \
+                  --query "MetricAlarms[0].StateValue" --output text 2>/dev/null)
+                if [ -z "$STATE" ] || [ "$STATE" = "None" ]; then
+                  echo "Não foi possível ler o estado do alarme '$ALARM_NAME' — tratando como INSUFFICIENT_DATA (fail-closed)." >&2
+                  STATE="INSUFFICIENT_DATA"
+                fi
+                echo "Estado do alarme '$ALARM_NAME': $STATE"
+                echo -n "$STATE" > /tmp/alarm-state
 
         - name: approve-shard2-promotion
           # Gate de aprovação manual: o Workflow fica "Running" (Suspended)
@@ -243,10 +348,29 @@ resource "kubectl_manifest" "argo_workflow_template" {
             args:
               - |
                 set -e
-                echo "Aprovado — sincronizando springboot-shard-2..."
+                echo "Sincronizando springboot-shard-2..."
                 kubectl patch application springboot-shard-2 -n argocd --type merge \
                   -p '{"operation":{"sync":{"revision":"HEAD"}}}'
                 echo "Sync disparado. Acompanhe com: kubectl get application springboot-shard-2 -n argocd -w"
+
+        - name: rollback-shard1
+          # Aborta o Rollout em andamento — o Argo Rollouts devolve 100% do
+          # tráfego pra versão "stable" (anterior) imediatamente, sem
+          # precisar de um novo commit/push. Usa patch no subresource
+          # "status" (kubectl >= 1.24) porque o CRD do Rollout declara
+          # status como subresource — um patch comum, sem
+          # --subresource=status, é silenciosamente ignorado pela API do
+          # Kubernetes nesse campo.
+          container:
+            image: alpine/k8s:1.30.0
+            command: ["sh", "-c"]
+            args:
+              - |
+                set -e
+                echo "Alarme não OK — abortando o Rollout da shard-1 (rollback automático)..."
+                kubectl patch rollout springboot -n shard-1 --type merge \
+                  --subresource status -p '{"status":{"abort":true}}'
+                echo "Shard-1 abortada — tráfego voltou 100% pra versão anterior (stable)."
   YAML
 
   depends_on = [
@@ -255,5 +379,6 @@ resource "kubectl_manifest" "argo_workflow_template" {
     kubernetes_secret.git_push_credentials,
     kubernetes_cluster_role_binding.argo_workflow_rollouts_reader,
     kubernetes_role_binding.argo_workflow_argocd_sync,
+    aws_iam_role_policy.argo_workflow_cloudwatch_read,
   ]
 }
