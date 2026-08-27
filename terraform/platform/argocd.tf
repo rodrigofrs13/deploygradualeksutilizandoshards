@@ -6,7 +6,7 @@ resource "time_sleep" "wait_for_eks" {
     data.aws_eks_cluster.this
   ]
 
-  create_duration = "60s"
+  create_duration = "120s"
 }
 
 # Create the ArgoCD Namespace
@@ -35,8 +35,8 @@ resource "helm_release" "argocd" {
   # var-file/estrutura de ambiente (ver README).
   values = [file("./environment/dev/argocd.yaml")]
 
-  # # Prevents dirty Terraform state if the installation fails initially
-  # cleanup_on_fail = true
+  # Prevents dirty Terraform state if the installation fails initially
+  cleanup_on_fail = true
 
   depends_on = [time_sleep.wait_for_eks]
 }

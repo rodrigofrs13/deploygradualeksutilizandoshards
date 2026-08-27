@@ -18,11 +18,16 @@ service:
 
 canary:
   # pause SEM "duration" = pausa indefinida: o Argo Rollouts NÃO promove
-  # sozinho depois de X segundos, fica parado em 50% até alguém rodar
+  # sozinho depois de X segundos, fica parado em cada peso até alguém rodar
   # manualmente `kubectl argo rollouts promote springboot -n <shard>`
   # (ou `... --full` pra pular direto pra 100%). Aprovação manual em TODO
-  # canário, dentro de cada shard — não só entre shards.
+  # canário, dentro de cada shard — não só entre shards. 4 estágios:
+  # 25% -> 50% -> 75% -> 100%, uma promoção manual entre cada um.
   steps:
+    - setWeight: 25
+    - pause: {}
     - setWeight: 50
+    - pause: {}
+    - setWeight: 75
     - pause: {}
     - setWeight: 100

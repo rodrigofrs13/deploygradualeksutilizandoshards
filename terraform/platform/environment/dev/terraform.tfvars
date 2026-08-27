@@ -1,5 +1,5 @@
-env                 = "dev"
-aws_region                 = "us-east-1"
+env                         = "dev"
+aws_region                  = "us-east-1"
 cluster_name                = "eks-automode-dev"
 
 # Precisam bater com terraform/infra/environment/dev/terraform.tfvars —

@@ -22,7 +22,7 @@ antes de começar:
 
 
 ```bash
-terraform -version   # >= 1.4.4
+terraform -version   # >= 1.7.0
 aws sts get-caller-identity   # credenciais AWS válidas
 kubectl version --client
 helm version
@@ -32,30 +32,40 @@ argo version   # CLI do Argo Workflows
 git --version
 ```
 
-**Esperado:** todos retornam versão, sem erro de "command not found" ou de
-credenciais. Se `aws sts get-caller-identity` falhar, resolva isso antes de
-tudo (`aws configure` ou variáveis `AWS_*`).
+**Esperado:** todos retornam versão, sem erro de "command not found" ou de credenciais. 
+
+Se `aws sts get-caller-identity` falhar, resolva isso antes de tudo (`aws configure` ou variáveis `AWS_*`).
 
 ## 1. Provisionar a camada `infra`
+
+dite o arquivo `environment/dev/terraform.tfvars` e preencha conforme as caracteristicas do seu ambiente.
 
 ```bash
 cd terraform/infra 
 terraform init
-terraform apply -var-file=environment/dev/terraform.tfvars
+terraform plan -var-file=environment/dev/terraform.tfvars
+terraform apply -var-file=environment/dev/terraform.tfvars -auto-approve
 ```
 
-Digite `yes` quando pedido. Isso demora uns 10-15 min (o cluster EKS é o
-que mais demora).
+Isso demora uns 10-15 min (o cluster EKS é o que mais demora).
 
-**Esperado:** `Apply complete!` no final, sem erros. Anote a saída de
-`ecr_repository_url` (vai aparecer nos outputs) — deve ser algo como
-`123456789012.dkr.ecr.us-east-1.amazonaws.com/eks-automode-app-dev`.
+**Esperado:** `Apply complete!` no final, sem erros. 
+
+Anote a saída de `ecr_repository_url` (vai aparecer nos outputs) — deve ser algo como `123456789012.dkr.ecr.us-east-1.amazonaws.com/eks-automode-app-dev`.
 
 Confirme o cluster:
 
+Na saída do Terraform, existe um parametro chamado `configure_kubectl`, copie o comando a frente dele e execute, como o exemplo abaixo:
+
 ```bash
-aws eks describe-cluster --name eks-automode-dev --region us-east-1 \
-  --query "cluster.status"
+aws eks describe-cluster --name <nome-do-cluster> --region <region> --query "cluster.status"
+```
+
+Agora que estamos conectados no cluster, execute o comando abaixo alterando os parametros para que ele retorne o status do cluster.
+
+
+```bash
+aws eks describe-cluster --name <nome-do-cluster> --region <region> --query "cluster.status"
 ```
 
 **Esperado:** `"ACTIVE"`.
@@ -64,39 +74,35 @@ aws eks describe-cluster --name eks-automode-dev --region us-east-1 \
 
 ```bash
 cd ../platform
-vim environment/dev/secrets.tfvars
+cp environment/dev/secrets.tfvars.example environment/dev/secrets.tfvars
 ```
 
-Edite `environment/dev/secrets.tfvars` e preencha:
+Edite o arquivo `environment/dev/secrets.tfvars` e preencha:
 
 ```hcl
 github_username = "<seu-usuario-github>"
 github_token     = "<seu-personal-access-token-com-escopo-repo>"
 ```
 
-Confirme também que `environment/dev/terraform.tfvars` tem
-`github_repo_url` apontando para **este** repositório (o que contém
-`apps/springboot`) — sem isso o Argo Workflow não vai conseguir clonar nem
-dar push no lugar certo.
+Confirme também que `environment/dev/terraform.tfvars` tem `github_repo_url` apontando para **este** repositório (o que contém
+`apps/springboot`) — sem isso o **Argo Workflow** não vai conseguir clonar nem dar push no lugar certo.
 
 ```bash
 terraform init
-terraform apply \
-  -var-file=environment/dev/terraform.tfvars \
-  -var-file=environment/dev/secrets.tfvars
+terraform plan -var-file=environment/dev/terraform.tfvars -var-file=environment/dev/secrets.tfvars
+terraform apply -var-file=environment/dev/terraform.tfvars -var-file=environment/dev/secrets.tfvars -auto-approve
 ```
 
-Digite `yes` quando pedido.
+**Esperado:** `Apply complete!`. 
 
-**Esperado:** `Apply complete!`. Se o Terraform parar pedindo
-`var.github_username`/`var.github_token` interativamente, o
-`secrets.tfvars` não foi encontrado ou não foi passado no comando — confira
-o passo acima.
+Se o Terraform parar pedindo `var.github_username`/`var.github_token` interativamente, o `secrets.tfvars` não foi encontrado ou não foi passado no comando — confira o passo acima.
+
+Anote o output dos balanceadores de carga. Será necessário durante os próximos passos. 
 
 ## 3. Configurar o `kubectl` e checar a instalação de base
 
 ```bash
-aws eks update-kubeconfig --region us-east-1 --name eks-automode-dev
+aws eks update-kubeconfig --region <região> --name <nome-do-cluster>
 kubectl get nodepools
 kubectl get nodeclasses
 kubectl get ns
@@ -138,24 +144,24 @@ Acesse a UI do ArgoCD para acompanhar visualmente (opcional, mas útil):
 ```bash
 sh 'deploygradualeksutilizandoshards/scripts/02-get-argocd-lb-address-and-password.sh'
 Argo CD admin password: xxx
-Argo CD URL: xxx
+Argo CD URL: http://xxx
 ```
 
 Abra a URL, login `admin` + a senha impressa acima.
 
+Temos uma ApplicationSets `springboot-shards` que controla 2 Applications, `springboot-shards-1` e `springboot-shards-2`.  
+
 ## 5. Disparar o Argo Workflow (build + push + atualização do Git)
 
-TODO - Pegar o dns do workflow
+Acessar via console http://<NLB>:2746
 
-Desde `argoworkflows-poller.tf`, isso acontece **sozinho**: um
-`CronWorkflow` (`git-poll-trigger`) roda a cada 2 min, detecta que o Git
-mudou e dispara o build automaticamente — não seria necessário rodar nada
-aqui. Mas para este teste guiado, dispare manualmente pra não depender de
-esperar até 2 min pelo próximo ciclo de polling:
+Desde `argoworkflows-poller.tf`, isso acontece **sozinho**: um `CronWorkflow` (`git-poll-trigger`) roda a cada 2 min, detecta que o Git
+mudou e dispara o build automaticamente — não seria necessário rodar nada aqui. 
+
+Mas para este teste guiado, dispare manualmente pra não depender de esperar até 2 min pelo próximo ciclo de polling:
 
 ```bash
-argo submit --from workflowtemplate/build-push-springboot \
-  -n argo-workflows --watch
+argo submit --from workflowtemplate/build-push-springboot -n argo-workflows --watch
 ```
 
 (Se quiser confirmar o disparo automático em vez do manual, pule este
@@ -451,12 +457,10 @@ detalhes):
 
 ```bash
 cd terraform/platform
-terraform destroy \
-  -var-file=environment/dev/terraform.tfvars \
-  -var-file=environment/dev/secrets.tfvars
+terraform destroy -var-file=environment/dev/terraform.tfvars -var-file=environment/dev/secrets.tfvars -auto-approve
 
 cd ../infra
-terraform destroy -var-file=environment/dev/terraform.tfvars
+terraform destroy -var-file=environment/dev/terraform.tfvars -auto-approve
 ```
 
 ## Checklist resumido
