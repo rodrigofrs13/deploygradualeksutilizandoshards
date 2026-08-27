@@ -132,7 +132,7 @@ resource "kubectl_manifest" "argo_workflow_poller_cronworkflow" {
       # CronWorkflow com "spec.schedules: Required value" se só "schedule"
       # for enviado).
       schedules:
-        - "*/5 * * * *"
+        - "*/15 * * * *"
       timezone: "UTC"
       concurrencyPolicy: "Forbid"
       startingDeadlineSeconds: 30

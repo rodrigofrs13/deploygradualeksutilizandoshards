@@ -1,9 +1,40 @@
+# type: LoadBalancer — igual ao service-stable.yaml, pra dar pra acessar a
+# versão em canário (v2) direto por URL/NLB durante o rollout, sem precisar
+# de `kubectl port-forward` — enquanto o service-stable continua servindo a
+# versão anterior (v1) até o canário ser promovido a 100%. Como esse chart é
+# o MESMO aplicado nas duas shards (só shard/namespace mudam via
+# spec.source.helm.parameters no ApplicationSet — argocd-applicationset.tf),
+# essa mudança sozinha já cria mais DOIS NLBs, um em cada namespace de shard
+# (4 NLBs de app no total, 2 stable + 2 canary — some ao total de NLBs do
+# ambiente, ver README "Expondo as apps das shards via LoadBalancer").
+#
+# Atenção: assim como o stable, esse Service fica de pé o tempo todo — não
+# só durante o canário. Fora de uma promoção em andamento, os pods
+# "canário" não existem (o Argo Rollouts só cria a ReplicaSet canary quando
+# há um rollout ativo), então o NLB simplesmente não tem nenhum endpoint
+# saudável pra rotear até a próxima vez que um canário rodar.
 apiVersion: v1
 kind: Service
 metadata:
   name: springboot-canary
   namespace: {{ .Values.namespace }}
+  annotations:
+    # Mesmo padrão usado pro ArgoCD/Argo Workflows/service-stable
+    # (terraform/platform/environment/dev/*.yaml): "external" é o único
+    # valor aceito pelo controller nativo do EKS Auto Mode.
+    service.beta.kubernetes.io/aws-load-balancer-type: "external"
+    # "ip" = os targets do NLB apontam direto pro IP do pod (recomendado com
+    # Auto Mode/Karpenter), em vez do IP do node.
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
+    # "internet-facing" = acessível da internet, sem precisar estar na VPC
+    # nem usar port-forward. Troque para "internal" se quiser restringir ao
+    # acesso interno da VPC.
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
 spec:
+  type: LoadBalancer
+  # Explícito em vez de depender só do default implícito do cluster — deixa
+  # claro que o NLB é gerenciado pelo controller nativo do EKS Auto Mode.
+  loadBalancerClass: eks.amazonaws.com/nlb
   selector:
     app: springboot
     shard: {{ .Values.shard }}
