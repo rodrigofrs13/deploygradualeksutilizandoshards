@@ -5,7 +5,7 @@
 shard: shard-1
 namespace: shard-1
 
-replicas: 40
+replicas: 14
 
 image:
   repository: 246732148991.dkr.ecr.us-east-1.amazonaws.com/eks-automode-app-dev

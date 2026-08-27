@@ -422,8 +422,7 @@ Se depois de uns 3 minutos nenhum Workflow novo apareceu, dispare
 manualmente pra não travar o teste e investigue o `CronWorkflow` depois:
 
 ```bash
-argo submit --from workflowtemplate/build-push-springboot \
-  -n argo-workflows --watch
+argocd submit --from workflowtemplate/build-push-springboot -n argo-workflows --watch
 ```
 
 **Esperado (de qualquer forma):** uma tag de imagem **nova** (novo commit
@@ -451,9 +450,7 @@ kubectl argo rollouts retry rollout springboot -n shard-1
 
 ## 15. Encerrar o teste
 
-Se for só uma pausa, não precisa destruir nada — o ambiente fica de pé.
-Para desmontar tudo ao final (ordem inversa da criação, veja o README para
-detalhes):
+Para desmontar tudo ao final segue a ordem da remoção.
 
 ```bash
 cd terraform/platform
@@ -463,120 +460,5 @@ cd ../infra
 terraform destroy -var-file=environment/dev/terraform.tfvars -auto-approve
 ```
 
-## Checklist resumido
 
-- [ ] `infra` aplicado sem erro, cluster `ACTIVE`
-- [ ] `platform` aplicado sem erro (com `secrets.tfvars`)
-- [ ] NodePools/NodeClasses `shard-1`/`shard-2` existem
-- [ ] Pods de `argocd`/`argo-rollouts`/`argo-workflows` rodando
-- [ ] `argo submit` do `build-push-springboot` termina `Succeeded`
-- [ ] Nova tag no ECR + `values.yaml` atualizado + commit novo no Git
-- [ ] `springboot-shard-1` sincroniza sozinha e o canário pausa em 50% (`Paused`)
-- [ ] `kubectl argo rollouts promote springboot -n shard-1` leva o canário a 100%
-- [ ] App na shard 1 responde com `"shard":"shard-1"`
-- [ ] `springboot-shard-2` fica `OutOfSync` até aprovação manual
-- [ ] `argocd app sync springboot-shard-2` promove a Application e o canário roda de novo, pausando em 50%
-- [ ] `kubectl argo rollouts promote springboot -n shard-2` leva o canário a 100%
-- [ ] App na shard 2 responde com `"shard":"shard-2"`
-- [ ] Pod sem toleration fica `Pending` em node da shard (taint funcionando)
-- [ ] Round-trip completo (novo commit → novo build → novo canário) funciona
-- [ ] `git-poll-trigger` (CronWorkflow) dispara sozinho um `git-triggered-build-*` sem `argo submit` manual
 
-## Apêndice A: Testar a app localmente, sem o cluster
-
-Útil pra desenvolver/testar a app antes de subir qualquer infra na AWS:
-
-```bash
-cd apps
-mvn spring-boot:run
-# ou: mvn clean package -DskipTests && java -jar target/springboot-sharded-app-1.0.0.jar
-```
-
-Em outro terminal:
-
-```bash
-curl http://localhost:8080/
-# {"application":"springboot-sharded-app","version":"1.0.0","shard":"unknown"}
-curl http://localhost:8080/health
-curl http://localhost:8080/actuator/health/readiness
-```
-
-**Esperado:** os três respondem sem erro. `shard` aparece como `"unknown"`
-porque `APP_SHARD` só é definida como env var dentro do `Rollout`
-(`apps/springboot/templates/rollout.yaml`) — localmente essa variável não
-existe.
-
-## Apêndice B: Acessar ArgoCD/Argo Workflows via NLB (hostname público/interno)
-
-Alternativa ao `port-forward` usado nas seções acima — útil se quiser
-acessar sem manter um túnel aberto. O provisionamento do NLB é
-**assíncrono**: nos primeiros minutos depois do `apply`, o hostname pode
-ainda não existir.
-
-ArgoCD:
-
-```bash
-kubectl get svc -n argocd argocd-argocd-server
-```
-
-Ou use `scripts/02-get-argocd-lb-address-and-password.sh` (imprime a senha
-inicial do admin e a URL — assume um binário `jq` no PATH chamado
-`jq-windows-amd64.exe`, ajuste se necessário).
-
-Argo Workflows:
-
-```bash
-kubectl get svc -n argo-workflows argo-workflows-server
-```
-
-**Esperado:** o campo `EXTERNAL-IP` (ou `LoadBalancer Ingress` num
-`kubectl describe svc`) mostra um hostname `*.elb.amazonaws.com` depois de
-alguns minutos. A UI do Argo Workflows usa HTTPS com certificado
-autoassinado por padrão — o navegador vai avisar, é esperado (aceite o
-risco/prossiga). Veja no README, seções "Expondo o ArgoCD/Argo Workflows
-via LoadBalancer", o significado de cada annotation e os avisos de
-segurança sobre deixar esses NLBs públicos.
-
-**Atenção com a porta:** o Service do Argo Workflows expõe a UI na porta
-**`2746`**, não 80/443 — confirme com `kubectl describe svc
-argo-workflows-server -n argo-workflows` (campo `Port`). Acessar
-`https://<hostname>` sem especificar a porta cai na 443 por padrão do
-navegador/curl e não abre nada (nada escutando lá); o endereço certo é
-`https://<hostname-do-nlb>:2746`. O ArgoCD, por padrão, já expõe em
-`443`/`80`, então não precisa dessa porta extra.
-
-## Apêndice C: Build e push manual da imagem, sem o Argo Workflow
-
-Alternativa mais rápida ao pipeline completo de 4 passos — útil pra testar
-uma mudança pontual:
-
-```bash
-# Linux/macOS
-./scripts/build-push.sh 1.0.1
-
-# Windows
-./scripts/build-push.ps1 -Tag 1.0.1
-```
-
-Sobrescreva `ECR_REPOSITORY`/`AWS_REGION` (bash) ou `-Repository`/`-Region`
-(PowerShell) se o seu ambiente usar outro nome/região.
-
-⚠️ O repositório ECR é criado com `image_tag_mutability = IMMUTABLE`: cada
-push precisa de uma tag **nova** (ex.: `1.0.1`, `1.0.2`...) — tentar
-sobrescrever uma tag já publicada falha, por design.
-
-**Importante:** diferente do Argo Workflow, esse script **não** atualiza
-`apps/springboot/values.yaml` nem dá `git commit`/`push`. Pra disparar o
-deploy gradual com essa imagem, edite `image.tag`/`image.repository` em
-`apps/springboot/values.yaml` manualmente e dê commit/push você mesmo —
-depois disso o fluxo é o mesmo das seções 7 a 11 acima.
-
-## Apêndice D: Ver logs do control plane
-
-```bash
-aws logs tail /aws/eks/eks-automode-dev/cluster --follow
-```
-
-**Esperado:** eventos de log dos 5 tipos habilitados (`api`, `audit`,
-`authenticator`, `controllerManager`, `scheduler`). Isso cobre só o
-**control plane** — não mostra logs de aplicação (stdout dos pods).
