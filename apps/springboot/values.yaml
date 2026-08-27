@@ -26,3 +26,16 @@ canary:
     - setWeight: 50
     - pause: {}
     - setWeight: 100
+
+# Controla como a promoção da shard-1 (já 100%/Healthy) para shard-2 acontece, dentro do WorkflowTemplate build-push-springboot
+# (terraform/platform/argoworkflows-template.tf). Ler/trocar isso é só editar este arquivo e dar commit/push — não precisa de terraform apply
+# novo, o Workflow lê esse valor direto do repositório clonado a cada execução.
+promotion:
+  # true  = aprovação AUTOMÁTICA: o Workflow consulta o CloudWatch Alarm abaixo depois que a shard-1 chegar a Healthy — se o estado for
+  #         OK, promove a shard-2 sozinho; se for ALARM ou INSUFFICIENT_DATA, aborta (rollback) o rollout da shard-1.
+  # false = aprovação MANUAL (como era antes): o Workflow fica suspenso na UI do Argo Workflows até alguém clicar "Resume".
+  automaticApproval: true
+  # Nome do CloudWatch Alarm consultado quando automaticApproval=true.
+  # Criado em terraform/platform/cloudwatch-alarm.tf — hoje é um alarme de TESTE (métrica própria, sem nada publicando nela ainda); veja o
+  # comentário desse arquivo pra saber como forçar cada estado manualmente  pra testar o fluxo automático.
+  cloudWatchAlarmName: "eks-automode-dev-springboot-shard1-health"

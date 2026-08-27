@@ -1,29 +1,18 @@
-# WorkflowTemplate reutilizável: build+push da imagem no ECR (Kaniko),
-# atualização de apps/springboot/values.yaml no Git, e a promoção
-# controlada entre shards — manual OU automática via CloudWatch Alarm,
-# escolhido em tempo de execução por um campo do PRÓPRIO
-# apps/springboot/values.yaml (promotion.automaticApproval). Disparo do
-# Workflow em si continua sempre MANUAL/por polling (veja
-# argoworkflows-poller.tf) — não há Argo Events/webhook nenhum "escutando"
-# o repositório.
+# WorkflowTemplate reutilizável: build+push da imagem no ECR (Kaniko), atualização de apps/springboot/values.yaml no Git, e a promoção
+# controlada entre shards — manual OU automática via CloudWatch Alarm, escolhido em tempo de execução por um campo do PRÓPRIO
+# apps/springboot/values.yaml (promotion.automaticApproval). Disparo do Workflow em si continua sempre MANUAL/por polling (veja
+# argoworkflows-poller.tf) — não há Argo Events/webhook nenhum "escutando" o repositório.
 #
-# spec.templates.build-and-deploy é um DAG (não "steps") de propósito: a
-# partir do passo 5 o fluxo se ramifica (automático vs. manual) e as duas
-# ramificações convergem de volta num único "promote-shard2" — isso é mais
-# natural de expressar com dependências (depends/when) do que com uma
+# spec.templates.build-and-deploy é um DAG (não "steps") de propósito: a partir do passo 5 o fluxo se ramifica (automático vs. manual) e as duas
+# ramificações convergem de volta num único "promote-shard2" — isso é mais natural de expressar com dependências (depends/when) do que com uma
 # lista sequencial de "steps".
 #
 # Tarefas (spec.templates.build-and-deploy.dag.tasks):
-#   1. clone-repo             — clona var.github_repo_url (público) num
-#                                volume compartilhado entre os passos (PVC,
-#                                não emptyDir, porque cada passo do Argo
-#                                Workflows roda num Pod separado); captura
-#                                o commit SHA curto (tag da imagem) e
-#                                também lê promotion.automaticApproval /
-#                                promotion.cloudWatchAlarmName do
-#                                values.yaml recém-clonado — assim o resto
-#                                do Workflow decide o caminho sem precisar
-#                                de mais nenhum step só pra isso.
+#   1. clone-repo             — clona var.github_repo_url (público) num volume compartilhado entre os passos (PVC,
+#                                não emptyDir, porque cada passo do Argo Workflows roda num Pod separado); captura
+#                                o commit SHA curto (tag da imagem) e também lê promotion.automaticApproval /
+#                                promotion.cloudWatchAlarmName do values.yaml recém-clonado — assim o resto
+#                                do Workflow decide o caminho sem precisar de mais nenhum step só pra isso.
 #   2. maven-build            — `mvn clean package` dentro de apps/.
 #   3. kaniko-build-push      — builda apps/Dockerfile com Kaniko e dá push
 #                                no ECR. SEM Docker-in-Docker.
@@ -150,12 +139,9 @@ resource "kubectl_manifest" "argo_workflow_template" {
                 template: approve-shard2-promotion
                 when: "{{tasks.clone-repo.outputs.parameters.auto-approval}} == false"
 
-              # Converge as duas ramificações: dispara se o alarme veio OK
-              # (caminho automático) OU se a aprovação manual foi resumida
-              # com sucesso (caminho manual). O "|| *.Skipped" em cada lado
-              # do "depends" é necessário porque exatamente uma das duas
-              # tarefas acima sempre fica Skipped (quando o "when" dela é
-              # falso) — sem isso, o depends padrão (que exige Succeeded)
+              # Converge as duas ramificações: dispara se o alarme veio OK (caminho automático) OU se a aprovação manual foi resumida
+              # com sucesso (caminho manual). O "|| *.Skipped" em cada lado do "depends" é necessário porque exatamente uma das duas
+              # tarefas acima sempre fica Skipped (quando o "when" dela é  falso) — sem isso, o depends padrão (que exige Succeeded)
               # nunca seria satisfeito.
               - name: promote-shard2
                 depends: >-

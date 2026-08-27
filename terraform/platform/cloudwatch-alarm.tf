@@ -25,8 +25,7 @@ resource "aws_cloudwatch_metric_alarm" "springboot_shard1_health" {
   statistic           = "Maximum"
   threshold           = 0
 
-  # "breaching" = sem dado nenhum, o alarme fica em ALARM/INSUFFICIENT_DATA
-  # (fail-closed) em vez de OK — não queremos que a promoção automática
+  # "breaching" = sem dado nenhum, o alarme fica em ALARM/INSUFFICIENT_DATA (fail-closed) em vez de OK — não queremos que a promoção automática
   # aconteça só porque ninguém publicou métrica nenhuma ainda.
   treat_missing_data = "breaching"
 
