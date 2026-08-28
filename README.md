@@ -92,14 +92,14 @@ flowchart TB
     R2 --- NLB_APP
 ```
 
-Os números seguem a ordem real de um deploy: ① um `git push` em `apps/`
-dispara o Argo Workflow (por polling ou manual); ② ele builda a imagem com
-Kaniko e dá push no ECR; ③ atualiza `apps/springboot/values.yaml` com a
-nova tag e comita de volta no Git; ④ o ArgoCD detecta o commit e sincroniza
-a shard-1 sozinho, iniciando o canário; ⑤ só depois que a shard-1 chega a
-100%/Healthy é que a promoção da shard-2 fica disponível — manual por
-padrão, ou automática via CloudWatch Alarm se eu ligar o toggle (mais
-adiante no texto).
+Os números seguem a ordem real de um deploy: 
+- ① um `git push` em `apps/` dispara o Argo Workflow (por polling ou manual); 
+- ② ele builda a imagem com Kaniko e dá push no ECR; 
+- ③ atualiza `apps/springboot/values.yaml` com a
+nova tag e comita de volta no Git; 
+- ④ o ArgoCD detecta o commit e sincroniza a shard-1 sozinho, iniciando o canário; 
+- ⑤ só depois que a shard-1 chega a 100%/Healthy é que a promoção da shard-2 fica disponível — manual por
+padrão, ou automática via CloudWatch Alarm se eu ligar o toggle (mais adiante no texto).
 
 O código Terraform ficou dividido em **duas camadas com states
 independentes**: `terraform/infra` (VPC, IAM, o cluster EKS em si, ECR — só
