@@ -1,7 +1,4 @@
-# NodeClass define a infraestrutura AWS usada pelos nodes (role, subnets,
-# security groups). No EKS Auto Mode, a AMI é sempre a Bottlerocket
-# gerenciada pela AWS — não existe campo para escolher outra AMI/family.
-
+# NodeClass: infra AWS usada pelos nodes (role, subnets, security groups). AMI é sempre Bottlerocket no EKS Auto Mode, não configurável.
 resource "kubectl_manifest" "nodeclass_shard_1" {
   yaml_body = <<-YAML
     apiVersion: eks.amazonaws.com/v1
@@ -9,7 +6,7 @@ resource "kubectl_manifest" "nodeclass_shard_1" {
     metadata:
       name: node-pool-shard-1
     spec:
-      role: ${var.node_role_name}
+      role: ${local.node_role_name}
       subnetSelectorTerms:
         - tags:
             kubernetes.io/role/internal-elb: "1"
@@ -28,7 +25,7 @@ resource "kubectl_manifest" "nodeclass_shard_2" {
     metadata:
       name: node-pool-shard-2
     spec:
-      role: ${var.node_role_name}
+      role: ${local.node_role_name}
       subnetSelectorTerms:
         - tags:
             kubernetes.io/role/internal-elb: "1"

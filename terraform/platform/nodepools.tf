@@ -1,19 +1,5 @@
-# NodePool define as regras de scheduling/capacidade (karpenter.sh/v1).
-# Ambos os shards usam:
-#   - Spot com fallback on-demand (karpenter.sh/capacity-type in [spot, ondemand])
-#   - um pequeno conjunto de tipos de instância equivalentes
-#     (var.shard_instance_types), para dar mais chance ao Spot e ainda
-#     assim permitir aproximar "máximo N EC2" via limits.cpu/memory
-#     (ver locals.tf)
-#   - AMI Bottlerocket, que é a única disponível no EKS Auto Mode (definida
-#     implicitamente pelo NodeClass referenciado)
-#   - um taint "shard=<nome>:NoSchedule" — é isso que isola FISICAMENTE cada
-#     shard: só pods com a toleration correspondente (já definida no
-#     Rollout, apps/springboot/templates/rollout.yaml) conseguem agendar
-#     nesses nodes. Sem o taint, o label "shard" no nodeSelector garante que
-#     o pod vá PARA lá, mas não impede outros pods (sem esse nodeSelector)
-#     de também caírem nesses nodes.
-
+# NodePool (karpenter.sh/v1): Spot+on-demand, tipos em var.shard_instance_types, limits.cpu/memory aproximando var.shard_max_nodes (locals.tf), e
+# o taint "shard=<nome>:NoSchedule" que isola fisicamente cada shard. Ver README, "Isolamento físico das shards".
 resource "kubectl_manifest" "nodepool_shard_1" {
   yaml_body = <<-YAML
     apiVersion: karpenter.sh/v1

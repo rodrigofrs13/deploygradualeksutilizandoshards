@@ -1,7 +1,4 @@
-# A camada platform é aplicada DEPOIS da camada infra (ver README — apply em
-# duas etapas), quando o cluster EKS já existe. Por isso autenticamos via
-# data source (aws_eks_cluster / aws_eks_cluster_auth) em vez do resource
-# aws_eks_cluster.this, que só existe no state da camada infra.
+# Camada platform aplica depois da infra (cluster já existe) — autentica via data source, não via resource. Ver README, "Camadas do Terraform".
 provider "aws" {
   region = var.aws_region
 }

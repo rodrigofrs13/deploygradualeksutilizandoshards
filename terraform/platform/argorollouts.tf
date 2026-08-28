@@ -1,13 +1,5 @@
-# Argo Rollouts — controla o canário DENTRO de cada shard (o CRD `Rollout`
-# usado em apps/springboot/templates/rollout.yaml só existe depois que isso
-# é instalado).
-#
-# Mesmo padrão de argocd.tf: um resource "kubernetes_namespace" explícito +
-# helm_release SEM "create_namespace = true". Antes os dois criavam o
-# namespace "argo-rollouts" ao mesmo tempo (o resource explícito abaixo E o
-# "create_namespace = true" do helm_release), o que costuma falhar com
-# "namespaces \"argo-rollouts\" already exists" quando os dois tentam criar
-# o mesmo objeto — provavelmente foi isso que travou o apply antes.
+# Argo Rollouts — controla o canário dentro de cada shard (CRD Rollout usado em apps/springboot/templates/rollout.yaml).
+# Cria Namespace 
 resource "kubernetes_namespace" "rollouts" {
   metadata {
     name = "argo-rollouts"
@@ -27,8 +19,8 @@ resource "helm_release" "argo_rollouts" {
   wait    = true
   timeout = 900
 
-  # Evita ficar com state "sujo" se a instalação falhar (mesma proteção já usada em argocd.tf).
-  cleanup_on_fail = true
+  cleanup_on_fail = true # Se um helm install falhar no meio do caminho ele deixa pra trás os recursos que já chegou a criar e marca o release como failed. 
+  # Da próxima vez que você rodar terraform apply, o Helm tenta fazer upgrade em cima desse release "sujo" e frequentemente trava com erro de conflito.
 
   depends_on = [
     kubernetes_namespace.rollouts

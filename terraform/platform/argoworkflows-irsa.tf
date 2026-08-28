@@ -1,18 +1,5 @@
-# IRSA (IAM Roles for Service Accounts) para os pods do Argo Workflow que
-# fazem o build+push da imagem no ECR (argoworkflows-template.tf).
-#
-# Diferente do OIDC do GitHub Actions (removido — a integração de CI passou
-# a ser o próprio Argo Workflow rodando dentro do cluster), aqui o
-# "provedor de identidade" confiado pela IAM é o OIDC issuer NATIVO do
-# cluster EKS: todo cluster EKS expõe um endpoint OIDC próprio
-# (data.aws_eks_cluster.this.identity[0].oidc[0].issuer), mas a AWS só
-# aceita tokens desse issuer depois que ele é registrado explicitamente
-# como um IAM OIDC Identity Provider — é o que aws_iam_openid_connect_provider
-# faz abaixo. A partir daí, qualquer pod rodando com a ServiceAccount
-# anotada (kubernetes_service_account.argo_workflow_ecr_push) recebe um
-# token JWT assinado por esse issuer, que a role troca por credenciais
-# temporárias via sts:AssumeRoleWithWebIdentity — sem nenhuma access key
-# estática armazenada no cluster.
+# IRSA + RBAC para os pods do Argo Workflow (build+push no ECR, gate de promoção shard-1 -> shard-2). 
+# Git" e "Promoção shard-1 -> shard-2".
 data "tls_certificate" "eks_oidc" {
   url = data.aws_eks_cluster.this.identity[0].oidc[0].issuer
 }
@@ -31,10 +18,9 @@ locals {
   argo_workflow_sa_name    = "argo-workflow-ecr-push"
   ecr_repository_arn       = "arn:aws:ecr:${var.aws_region}:${data.aws_caller_identity.current.account_id}:repository/${var.ecr_repository_name}"
   ecr_repository_url       = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com/${var.ecr_repository_name}"
-
-
 }
 
+# Restringe a role à ServiceAccount específica do Argo Workflow (via "sub" do token IRSA).
 data "aws_iam_policy_document" "argo_workflow_assume_role" {
   statement {
     actions = ["sts:AssumeRoleWithWebIdentity"]
@@ -44,9 +30,6 @@ data "aws_iam_policy_document" "argo_workflow_assume_role" {
       identifiers = [aws_iam_openid_connect_provider.eks.arn]
     }
 
-    # Restringe a role a ser assumida SÓ pela ServiceAccount específica do
-    # Argo Workflow (não qualquer pod do cluster) — o "sub" de um token
-    # IRSA tem o formato system:serviceaccount:<namespace>:<service-account>.
     condition {
       test     = "StringEquals"
       variable = "${local.eks_oidc_issuer_hostpath}:sub"
@@ -67,8 +50,7 @@ resource "aws_iam_role" "argo_workflow_ecr_push" {
 }
 
 data "aws_iam_policy_document" "argo_workflow_ecr_push" {
-  # ecr:GetAuthorizationToken só existe como ação de conta inteira (não
-  # aceita Resource específico) — é o único statement com resources = ["*"].
+  # GetAuthorizationToken só existe como ação de conta inteira (sem Resource específico).
   statement {
     sid       = "EcrAuth"
     actions   = ["ecr:GetAuthorizationToken"]
@@ -96,10 +78,7 @@ resource "aws_iam_role_policy" "argo_workflow_ecr_push" {
   policy = data.aws_iam_policy_document.argo_workflow_ecr_push.json
 }
 
-# Permissão extra pro step check-cloudwatch-alarm (argoworkflows-template.tf,
-# desafio extra de promoção automática): só leitura do estado do alarme
-# criado em cloudwatch-alarm.tf, restrita ao ARN dele especificamente (não
-# "cloudwatch:*" nem "resources = [*]").
+# Leitura do alarme do desafio extra (cloudwatch-alarm.tf), restrita ao ARN dele.
 data "aws_iam_policy_document" "argo_workflow_cloudwatch_read" {
   statement {
     sid       = "CloudWatchAlarmRead"
@@ -114,12 +93,7 @@ resource "aws_iam_role_policy" "argo_workflow_cloudwatch_read" {
   policy = data.aws_iam_policy_document.argo_workflow_cloudwatch_read.json
 }
 
-# ServiceAccount usada pelo WorkflowTemplate (spec.serviceAccountName em
-# argoworkflows-template.tf) — o annotation abaixo é o que o webhook nativo
-# do EKS usa para injetar AWS_ROLE_ARN/AWS_WEB_IDENTITY_TOKEN_FILE nos pods,
-# permitindo que o Kaniko (que usa a AWS SDK por baixo) autentique no ECR
-# sem nenhuma credencial explícita — veja o comentário em
-# argoworkflows-template.tf sobre o passo kaniko-build-push.
+# ServiceAccount usada pelo WorkflowTemplate (spec.serviceAccountName, argoworkflows-template.tf) — anotação injeta as credenciais IRSA.
 resource "kubernetes_service_account" "argo_workflow_ecr_push" {
   metadata {
     name      = local.argo_workflow_sa_name
@@ -133,16 +107,7 @@ resource "kubernetes_service_account" "argo_workflow_ecr_push" {
   depends_on = [kubernetes_namespace.argo_workflows]
 }
 
-# RBAC mínimo exigido pelo próprio Argo Workflows para QUALQUER
-# ServiceAccount usada como spec.serviceAccountName de um Workflow — sem
-# isso, o passo falha com "workflowtaskresults.argoproj.io is forbidden:
-# ... cannot create resource workflowtaskresults", porque desde a v3.4 o
-# executor (emissary) reporta o resultado de cada passo criando/atualizando
-# um objeto WorkflowTaskResult, em vez de dar patch direto no Pod. O chart
-# argo-workflows cria esse Role/RoleBinding automaticamente só para a
-# ServiceAccount default que ELE gerencia — como usamos uma ServiceAccount
-# própria (por causa do IRSA acima), precisamos conceder isso manualmente.
-# Referência: https://argo-workflows.readthedocs.io/en/latest/workflow-rbac/
+# RBAC mínimo exigido pelo Argo Workflows >= v3.4 para qualquer ServiceAccount custom (create/patch em workflowtaskresults).
 resource "kubernetes_role" "argo_workflow_executor" {
   metadata {
     name      = "argo-workflow-executor"
@@ -177,22 +142,7 @@ resource "kubernetes_role_binding" "argo_workflow_executor" {
   }
 }
 
-# RBAC extra para o gate de aprovação/promoção entre shard-1 e shard-2 (ver
-# argoworkflows-template.tf, steps wait-shard1-healthy / rollback-shard1 /
-# sync-shard2): a mesma ServiceAccount do pipeline de build precisa (1) ler
-# e (agora) abortar o Rollout da shard-1, e (2) dar patch na Application da
-# shard-2.
-
-# (1) Leitura + abort do Rollout via CLUSTER ROLE, de propósito — não um
-# "kubernetes_role" namespaced. Os namespaces shard-1/shard-2 só existem
-# depois do PRIMEIRO sync do ArgoCD (ver README, "Estrutura"/seção 3 do
-# TESTE-END-TO-END.md); um Role apontando para um namespace que ainda não
-# existe falharia no primeiro "terraform apply" da camada platform. Um
-# ClusterRole/ClusterRoleBinding não referencia nenhum namespace
-# específico, então não tem esse problema de ordering — o preço é que a
-# permissão vale pra qualquer namespace, não só shard-1/shard-2 (aceitável:
-# é só o CRD do Argo Rollouts, e o "patch" fica restrito ao subresource
-# "status", usado só pelo abort).
+# ClusterRole (não namespaced) porque os namespaces shard-1/shard-2 só existem após o 1º sync do ArgoCD — ver README, "Promoção shard-1 -> shard-2".
 resource "kubernetes_cluster_role" "argo_workflow_rollouts_reader" {
   metadata {
     name = "${var.cluster_name}-argo-workflow-rollouts-reader"
@@ -204,10 +154,7 @@ resource "kubernetes_cluster_role" "argo_workflow_rollouts_reader" {
     verbs      = ["get", "list", "watch"]
   }
 
-  # Necessário pro step rollback-shard1 (kubectl patch --subresource
-  # status): sem esse rule extra, o patch falha com "rollouts/status is
-  # forbidden" mesmo já tendo "get" no recurso principal — subresources têm
-  # RBAC próprio, independente do recurso "pai".
+  # rollouts/status é subresource com RBAC próprio — exigido pelo abort (rollback-shard1).
   rule {
     api_groups = ["argoproj.io"]
     resources  = ["rollouts/status"]
@@ -233,9 +180,7 @@ resource "kubernetes_cluster_role_binding" "argo_workflow_rollouts_reader" {
   }
 }
 
-# (2) Patch na Application da shard-2 — Role namespaced normal, sem o
-# problema de ordering acima: o namespace "argocd" já existe desde o início
-# (argocd.tf), bem antes deste recurso.
+# Patch na Application da shard-2 (sync-shard2, argoworkflows-template.tf) — namespace argocd já existe desde o início, sem problema de ordering.
 resource "kubernetes_role" "argo_workflow_argocd_sync" {
   metadata {
     name      = "argo-workflow-argocd-sync"
@@ -272,11 +217,7 @@ resource "kubernetes_role_binding" "argo_workflow_argocd_sync" {
   depends_on = [helm_release.argocd]
 }
 
-# Credenciais Git (usuário + Personal Access Token) usadas pelo ÚLTIMO passo
-# do WorkflowTemplate para dar "git push" da atualização de
-# apps/springboot/values.yaml de volta no repositório — é esse push que faz
-# o ArgoCD (syncPolicy.automated só na shard-1) pegar a nova imagem.
-# var.github_token NUNCA deve vir de um tfvars versionado (veja variables.tf).
+# Credenciais Git (usuário + PAT) usadas pelo passo update-values pra dar git push. Nunca em tfvars versionado — ver README, "Variáveis por ambiente".
 resource "kubernetes_secret" "git_push_credentials" {
   metadata {
     name      = "git-push-credentials"

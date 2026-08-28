@@ -1,41 +1,15 @@
 # values/argo-workflows.yaml
-#
-# ATENÇÃO — combinação de dois pontos, cada um decisão explícita do usuário,
-# mas que juntos merecem cuidado:
-#   1. UI/API acessível sem exigir login SSO/client (--auth-mode=server).
-#   2. NLB "internet-facing" (acesso público, não só de dentro da VPC) —
-#      veja serviceAnnotations abaixo.
-# Junto, isso significa que QUALQUER PESSOA com o hostname do NLB consegue
-# ver e SUBMETER/ABORTAR Workflows (inclusive o build-push-springboot) sem
-# autenticação nenhuma — não é só "ver a UI", é controle real sobre o
-# cluster de CI. Aceitável para uma Demo/teste de curta duração; para
-# qualquer uso além disso, o mínimo recomendado é voltar
-# aws-load-balancer-scheme para "internal" (abaixo) e/ou trocar
-# --auth-mode=server por SSO (veja a doc do Argo Workflows sobre
-# server.sso).
+
+
+# UI/API acessível sem exigir login SSO/client (--auth-mode=server).
 server:
   extraArgs:
     - "--auth-mode=server"
 
-  # Mesmo padrão de exposição do ArgoCD (ver environment/dev/argocd.yaml) —
-  # diferente do argo-cd chart, aqui as chaves ficam no nível raiz de
-  # "server:" (serviceType/serviceAnnotations/loadBalancerClass), não
-  # aninhadas em "server.service.*".
+  # NLB
   serviceType: LoadBalancer
-
   serviceAnnotations:
-    # "external" é o único valor válido reconhecido pelo controller
-    # embutido do EKS Auto Mode (junto com "nlb-ip", legado).
-    service.beta.kubernetes.io/aws-load-balancer-type: "external"
-    # "ip" é o recomendado com Auto Mode/Karpenter: os targets do NLB
-    # apontam direto para o IP do pod, em vez do IP do node.
-    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
-    # "internet-facing" = acesso público, alcançável de fora da VPC (não só
-    # de bastion/VPN). Decisão explícita do usuário — troque para "internal"
-    # se precisar restringir de novo ao acesso interno da VPC.
-    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
-
-  # Explícito em vez de depender só do default implícito do cluster — deixa
-  # claro no código que o NLB é gerenciado pelo controller nativo do EKS
-  # Auto Mode.
+    service.beta.kubernetes.io/aws-load-balancer-type: "external" # É o único valor válido reconhecido pelo controller embutido do EKS Auto Mode (junto com "nlb-ip", legado).
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip" # Recomendado com Auto Mode/Karpenter: os targets do NLB apontam direto para o IP do pod, em vez do IP do node.
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing" # "internet-facing" = acesso público
   loadBalancerClass: "eks.amazonaws.com/nlb"

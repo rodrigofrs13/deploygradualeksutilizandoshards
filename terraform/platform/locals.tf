@@ -1,18 +1,5 @@
-# O Karpenter (base do EKS Auto Mode) não possui um campo nativo para
-# "número máximo de nodes" em um NodePool — os limites em spec.limits são
-# sempre baseados em soma de recursos (cpu/memory) do cluster provisionado
-# por aquele NodePool, não em contagem de instâncias.
-#
-# Para aproximar "no máximo N EC2 por nodepool", permitimos um pequeno
-# conjunto de tipos de instância equivalentes em var.shard_instance_types
-# (dar mais de uma opção reduz o risco de falha por falta de capacidade
-# Spot de um único tipo) e calculamos o limite de CPU/memória com base no
-# MAIOR tipo do conjunto — isso garante que, em qualquer combinação de
-# tipos que o Karpenter escolher, o teto de var.shard_max_nodes nunca seja
-# ultrapassado (no pior caso, ele preenche só com o tipo maior).
-#
-# Se adicionar um tipo novo a var.shard_instance_types, inclua as specs
-# dele no mapa abaixo.
+# Aproxima "no máximo N EC2 por nodepool" via limits.cpu/memory (Karpenter não tem campo nativo de contagem). Ver README, "Isolamento físico das
+# shards". Ao adicionar um tipo de instância novo em var.shard_instance_types, inclua as specs dele aqui também.
 locals {
   instance_specs = {
     "m5.large"   = { vcpu = 2, memory_gib = 8 }
@@ -29,5 +16,8 @@ locals {
 
   shard_vcpu_limit   = local.shard_max_vcpu_per_instance * var.shard_max_nodes
   shard_memory_limit = "${local.shard_max_memory_gib_per_instance * var.shard_max_nodes}Gi"
-}
 
+  # Deduz o nome da IAM role dos nodes a partir de var.cluster_name (padrão criado por terraform/infra/iam.tf), em vez de exigir que o mesmo nome
+  # seja digitado de novo em var.node_role_name. Só usa var.node_role_name se alguém explicitamente sobrescrever esse padrão.
+  node_role_name = coalesce(var.node_role_name, "${var.cluster_name}-node-role")
+}

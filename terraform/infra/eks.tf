@@ -13,8 +13,7 @@ resource "aws_eks_cluster" "this" {
     subnet_ids = concat(module.vpc.private_subnets, module.vpc.public_subnets)
   }
 
-  # Habilita o EKS Auto Mode: a AWS passa a gerenciar o provisionamento
-  # e o ciclo de vida dos nodes automaticamente
+  # Habilita o EKS Auto Mode: a AWS passa a gerenciar o provisionamento e o ciclo de vida dos nodes automaticamente
   compute_config {
     enabled       = true
     node_pools    = ["general-purpose", "system"]
@@ -33,8 +32,7 @@ resource "aws_eks_cluster" "this" {
     }
   }
 
-  # Habilita todos os tipos de log do control plane: api, audit,
-  # authenticator, controllerManager e scheduler — todos enviados para o
+  # Habilita todos os tipos de log do control plane: api, audit, authenticator, controllerManager e scheduler — todos enviados para o
   # CloudWatch Logs em aws_cloudwatch_log_group.cluster
   enabled_cluster_log_types = [
     "api",
@@ -44,8 +42,7 @@ resource "aws_eks_cluster" "this" {
     "scheduler",
   ]
 
-  # Com Auto Mode, os add-ons básicos (CoreDNS, kube-proxy, VPC CNI)
-  # são geridos pela AWS, então desabilitamos o bootstrap self-managed
+  # Com Auto Mode, os add-ons básicos (CoreDNS, kube-proxy, VPC CNI) são geridos pela AWS, então desabilitamos o bootstrap self-managed
   bootstrap_self_managed_addons = false
 
   depends_on = [

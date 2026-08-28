@@ -1,5 +1,4 @@
-# AppProject do ArgoCD — restringe quais repositórios e destinos as
-# Applications geradas pelo ApplicationSet podem usar.
+# AppProject do ArgoCD — restringe repositórios/destinos das Applications geradas pelo ApplicationSet.
 resource "kubectl_manifest" "argocd_project" {
   yaml_body = <<-YAML
     apiVersion: argoproj.io/v1alpha1

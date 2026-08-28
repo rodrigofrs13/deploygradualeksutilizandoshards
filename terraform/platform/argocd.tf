@@ -1,6 +1,4 @@
-# O cluster já existe quando esta camada roda (ver README), então esperamos
-# na data source em vez do resource aws_eks_cluster.this (que vive só no
-# state da camada infra).
+# Espera o cluster ficar pronto. 
 resource "time_sleep" "wait_for_eks" {
   depends_on = [
     data.aws_eks_cluster.this
@@ -9,7 +7,8 @@ resource "time_sleep" "wait_for_eks" {
   create_duration = "120s"
 }
 
-# Create the ArgoCD Namespace
+
+# Cria namespace
 resource "kubernetes_namespace" "argocd" {
   metadata {
     name = "argocd"
@@ -21,22 +20,17 @@ resource "kubernetes_namespace" "argocd" {
   depends_on = [time_sleep.wait_for_eks]
 }
 
-
-
-# Deploy ArgoCD using Helm Release
+# Chart oficial argo-cd (argo-helm). Values em ./environment/dev/argocd.yaml 
 resource "helm_release" "argocd" {
   name       = "argocd"
   repository = "https://argoproj.github.io/argo-helm"
   chart      = "argo-cd"
-  version    = "10.4.0" # Use the latest stable chart version
+  version    = "10.4.0"
   namespace  = kubernetes_namespace.argocd.metadata[0].name
-  # Caminho relativo a partir de terraform/platform — o arquivo continua em
-  # terraform/infra/environment porque as duas camadas compartilham o mesmo
-  # var-file/estrutura de ambiente (ver README).
-  values = [file("./environment/dev/argocd.yaml")]
+  values     = [file("./environment/dev/argocd.yaml")]
 
-  # Prevents dirty Terraform state if the installation fails initially
-  cleanup_on_fail = true
+  cleanup_on_fail = true # Se um helm install falhar no meio do caminho ele deixa pra trás os recursos que já chegou a criar e marca o release como failed. 
+  # Da próxima vez que você rodar terraform apply, o Helm tenta fazer upgrade em cima desse release "sujo" e frequentemente trava com erro de conflito.
 
   depends_on = [time_sleep.wait_for_eks]
 }

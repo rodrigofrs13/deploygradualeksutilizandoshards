@@ -1,37 +1,9 @@
-# Hostnames dos NLBs internet-facing criados neste projeto. Só o ArgoCD e
-# o Argo Workflows entram aqui — os dois são Services criados diretamente
-# por este Terraform (via helm_release), então um data source consegue
-# lê-los de forma confiável assim que o apply chega neles.
-#
-# Os NLBs da app (springboot-stable em shard-1/shard-2,
-# apps/springboot/templates/service-stable.yaml) NÃO entram aqui de
-# propósito: esses Services são criados pelo ArgoCD (via ApplicationSet,
-# argocd-applicationset.tf), fora do grafo de dependências deste
-# Terraform — nada garante que já existam no momento do apply
-# (principalmente shard-2, que só sincroniza depois de aprovação manual).
-# Um data source apontando pra um Service que ainda não existe FALHA o
-# apply inteiro (diferente de um resource opcional) — por isso preferimos
-# não arriscar. Pra pegar o hostname deles, use os comandos `kubectl get
-# svc springboot-stable -n shard-1`/`-n shard-2` já documentados em
-# TESTE-END-TO-END.md, seções 8 e 11.
-#
-# Os dois outputs abaixo usam try(...) porque o NLB é provisionado de
-# forma ASSÍNCRONA pelo controller do EKS Auto Mode: logo depois do apply,
-# antes do hostname existir, o output vem como "" em vez de dar erro —
-# rode "terraform refresh" (ou outro apply) alguns minutos depois se
-# precisar do valor.
+# Hostnames dos NLBs internet-facing do ArgoCD/Argo Workflows (criados por este Terraform via helm_release). Os NLBs da app (springboot-stable,
+# criados pelo ArgoCD/ApplicationSet, fora do grafo deste Terraform) NÃO entram aqui de propósito — ver README, "Expondo as apps das shards via
+# LoadBalancer" para como pegar o hostname deles. try(...) porque o NLB é provisionado de forma assíncrona: logo após o apply pode vir "".
 
 data "kubernetes_service_v1" "argocd_server" {
   metadata {
-    # ATENÇÃO: nome assumido, não 100% confirmado. O Helm release se chama
-    # "argocd" (argocd.tf) mas o chart oficial (argo-cd, do repo
-    # argoproj/argo-helm) pode gerar um nome de Service diferente
-    # dependendo de como o próprio chart calcula seu "fullname" — o script
-    # scripts/02-get-argocd-lb-address-and-password.sh já assume
-    # "argocd-server" também, mas confirme com
-    # `kubectl get svc -n argocd` antes de confiar neste output; se vier
-    # diferente, ajuste o nome abaixo (ou troque por uma variável, se
-    # preferir não editar código toda vez).
     name      = "argocd-server"
     namespace = kubernetes_namespace.argocd.metadata[0].name
   }
@@ -41,7 +13,6 @@ data "kubernetes_service_v1" "argocd_server" {
 
 data "kubernetes_service_v1" "argo_workflows_server" {
   metadata {
-    # Nome confirmado via "kubectl describe svc -n argo-workflows" real.
     name      = "argo-workflows-server"
     namespace = kubernetes_namespace.argo_workflows.metadata[0].name
   }

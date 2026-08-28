@@ -38,11 +38,6 @@ output "cluster_log_group" {
   value       = aws_cloudwatch_log_group.cluster.name
 }
 
-# output "argocd_load_balancer_hostname" {
-#   description = "Hostname do NLB do ArgoCD — assim que fica disponível, o argocd-cm é apontado automaticamente para ele (pode vir vazio nos primeiros minutos após o apply)"
-#   value       = try(data.kubernetes_service.argocd_server.status[0].load_balancer[0].ingress[0].hostname, null)
-# }
-
 output "configure_kubectl" {
   description = "Comando para configurar o kubectl"
   value       = "aws eks update-kubeconfig --region ${var.aws_region} --name ${aws_eks_cluster.this.name}"
