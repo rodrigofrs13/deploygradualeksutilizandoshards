@@ -1,22 +1,30 @@
 # Deploy gradual em EKS com arquitetura em shards
 
-Este projeto nasceu de um desafio técnico: montar, do zero, um cluster Kubernetes na AWS onde uma aplicação Java fosse implantada de forma
-**gradual e controlada**, em duas frentes ao mesmo tempo — dentro de cada "fatia" (shard) do cluster, e entre as fatias. Neste artigo eu conto como
-cheguei na arquitetura final, as decisões que tomei no meio do caminho (e por que descartei as alternativas), e os perrengues reais que apareceram
-quando fui rodar tudo de verdade em uma conta AWS.
+Este projeto nasceu de um desafio técnico: montar, do zero, um cluster
+Kubernetes na AWS onde uma aplicação Java fosse implantada de forma
+**gradual e controlada**, em duas frentes ao mesmo tempo — dentro de cada
+"fatia" (shard) do cluster, e entre as fatias. Neste texto eu conto como
+cheguei na arquitetura final, as decisões que tomei no meio do caminho (e
+por que descartei as alternativas), e os perrengues reais que apareceram
+quando fui rodar tudo de verdade numa conta AWS.
 
-Se você só quer subir o ambiente, pule direto para "Como rodar". Se quer entender o raciocínio por trás de cada peça, seguiu o texto na ordem — é
+Se você só quer subir o ambiente, pule direto para "Como rodar". Se quer
+entender o raciocínio por trás de cada peça, seguiu o texto na ordem — é
 assim que eu fui construindo.
 
-Lembrando que esse é um ambiente de teste. NÃO RODAR EM PRODUÇÃO.
+## O que o desafio pedia
 
-## O desafio
+Em resumo: um cluster EKS com pelo menos dois NodePools isolados
+fisicamente entre si ("shards"), uma aplicação Java/Spring Boot buildada e
+publicada num repositório ECR próprio, e um deploy gradual em dois níveis —
+um canário dentro de cada shard, e uma promoção controlada (com aprovação
+manual) de uma shard pra outra, orquestrada por um `ApplicationSet` do
+ArgoCD. Tudo em IaC, com Helm para empacotar o que fosse instalado via
+chart.
 
-Criar um cluster EKS com pelo menos dois NodePools isolados fisicamente entre si ("shards"), uma aplicação Java/Spring Boot buildada e
-publicada num repositório ECR próprio, e um deploy gradual em dois níveis — um Canary Deploy dentro de cada shard e uma promoção controlada (com aprovação
-manual) de uma shard pra outra, orquestrada por um `ApplicationSet` do ArgoCD. Tudo em IaaS e com Helm Chart.
-
-Existe também um desafio extra: Automatizar a promoção entre shards usando um alarme do CloudWatch como critério de decisão em vez de uma aprovação. Até o monento estou em testes desse desafio.
+Tinha também um desafio extra, opcional: automatizar a promoção entre
+shards usando um alarme do CloudWatch como critério de decisão em vez de um
+clique manual. Voltei nisso mais pra frente no texto.
 
 ## A arquitetura que montei
 
@@ -34,10 +42,64 @@ Em cima disso, a pilha ficou:
 - **ECR** para a imagem da aplicação.
 - **ArgoCD** cuidando do GitOps: um `ApplicationSet` único gerando as duas
   `Application` (uma por shard).
-- **Argo Rollouts** fazendo o Canary Deploy *dentro* de cada shard.
+- **Argo Rollouts** fazendo o canário *dentro* de cada shard.
 - **Argo Workflows** rodando o pipeline de build+push+atualização — decidi
   não usar GitHub Actions, pra manter tudo rodando dentro do próprio
   cluster, sem precisar configurar OIDC ou secrets do lado do GitHub.
+
+No papel, a topologia ficou assim:
+
+```mermaid
+flowchart TB
+    GH["Repositório GitHub<br/>apps/ + terraform/"]
+
+    subgraph AWS["Conta AWS · us-east-1"]
+        subgraph VPC["VPC"]
+            subgraph PUB["Subnets públicas"]
+                NLB_ARGOCD["NLB · ArgoCD UI"]
+                NLB_WF["NLB · Argo Workflows UI"]
+                NLB_APP["NLBs · app stable<br/>(shard-1 e shard-2)"]
+            end
+
+            subgraph PRIV["Subnets privadas"]
+                subgraph EKS["Cluster EKS · Auto Mode"]
+                    CTRL["ArgoCD + Argo Rollouts<br/>+ Argo Workflows"]
+
+                    subgraph S1["NodePool shard-1<br/>taint shard=shard-1"]
+                        R1["Rollout springboot<br/>canário 50% → pausa → 100%"]
+                    end
+
+                    subgraph S2["NodePool shard-2<br/>taint shard=shard-2"]
+                        R2["Rollout springboot<br/>canário 50% → pausa → 100%"]
+                    end
+                end
+            end
+        end
+
+        ECR[("ECR<br/>eks-automode-app")]
+    end
+
+    GH -- "① git push (apps/)" --> CTRL
+    CTRL -- "② build (Kaniko) + push" --> ECR
+    CTRL -- "③ commit values.yaml" --> GH
+    CTRL -- "④ sync automático" --> S1
+    CTRL -- "⑤ aprovação manual" --> S2
+    ECR -. pull da imagem .-> R1
+    ECR -. pull da imagem .-> R2
+    NLB_ARGOCD --- CTRL
+    NLB_WF --- CTRL
+    R1 --- NLB_APP
+    R2 --- NLB_APP
+```
+
+Os números seguem a ordem real de um deploy: ① um `git push` em `apps/`
+dispara o Argo Workflow (por polling ou manual); ② ele builda a imagem com
+Kaniko e dá push no ECR; ③ atualiza `apps/springboot/values.yaml` com a
+nova tag e comita de volta no Git; ④ o ArgoCD detecta o commit e sincroniza
+a shard-1 sozinho, iniciando o canário; ⑤ só depois que a shard-1 chega a
+100%/Healthy é que a promoção da shard-2 fica disponível — manual por
+padrão, ou automática via CloudWatch Alarm se eu ligar o toggle (mais
+adiante no texto).
 
 O código Terraform ficou dividido em **duas camadas com states
 independentes**: `terraform/infra` (VPC, IAM, o cluster EKS em si, ECR — só
@@ -72,10 +134,10 @@ contagem.
 
 ## O deploy gradual em dois níveis
 
-### Dentro da shard: Canary Deploy com Argo Rollouts
+### Dentro da shard: canário com Argo Rollouts
 
 Troquei o `Deployment` padrão por um `Rollout` (CRD do Argo Rollouts), com
-os passos do Canary Deploy definidos em `apps/springboot/values.yaml`:
+os passos do canário definidos em `apps/springboot/values.yaml`:
 
 ```yaml
 canary:
@@ -122,7 +184,7 @@ value`), não em nenhuma validação estática.
 Um efeito colateral curioso que vale registrar: como as duas `Application`
 apontam pro **mesmo** `targetRevision: HEAD` do mesmo repositório, assim
 que o pipeline dá `git push`, a `Application` da shard-2 já aparece
-`OutOfSync` — mesmo com o Canary Deploy da shard-1 ainda no meio do caminho. Isso
+`OutOfSync` — mesmo com o canário da shard-1 ainda no meio do caminho. Isso
 é só comparação (o `repo-server` do ArgoCD vendo que o Git mudou), não um
 deploy: sem `syncPolicy.automated` nesse generator, nada é de fato aplicado
 até alguém confirmar.
@@ -142,7 +204,7 @@ Docker-in-Docker — importante, porque não tem daemon Docker disponível
 dentro dos pods do cluster) → push no ECR → atualiza
 `apps/springboot/values.yaml` com a nova tag e dá `git commit`+`push`. É
 esse push que a `Application` da shard-1 (que tem `syncPolicy.automated`)
-detecta e sincroniza sozinha, disparando o Canary Deploy.
+detecta e sincroniza sozinha, disparando o canário.
 
 Pra autenticar no ECR sem guardar nenhuma credencial estática no cluster,
 usei **IRSA** (IAM Roles for Service Accounts): registrei o OIDC issuer
@@ -280,7 +342,7 @@ técnico:
   AZ — mais barato, mas se a AZ onde ele está cair, as subnets privadas nas
   outras AZs perdem saída pra internet até ela voltar. Pra produção, eu
   desligaria essa flag.
-- **Sem progressão automática cronometrada** nem no Canary Deploy
+- **Sem progressão automática cronometrada** nem no canário
   (`pause: { duration: ... }`) nem entre shards (o ArgoCD tem um recurso
   nativo pra isso, `Progressive Syncs`/`RollingSync`) — o requisito pedia
   aprovação manual explícita nos dois níveis, então não usei nenhum dos
