@@ -218,36 +218,31 @@ flowchart LR
     GH2 -- "commit novo detectado" --> ARGOCD["ArgoCD<br/>sync automático shard-1"]
 ```
 
-Os quatro passos, na ordem em que o DAG os executa:
+Os quatro passos, na ordem em que o DAG (Directed Acyclic Graph — grafo acíclico dirigido) os executa:
 
 1. **`clone-repo`** — clona o repositório e captura o SHA curto do commit (`git rev-parse --short HEAD`), usado como tag da imagem daqui pra    frente.
 2. **`maven-build`** — `mvn clean package` dentro de `apps/`, gerando o `.jar` que o `Dockerfile` só copia (não builda a app de novo).
 3. **`kaniko-build-push`** — builda `apps/Dockerfile` com **Kaniko** e dá push no ECR, autenticando via IRSA (explico logo abaixo).
-4. **`update-values`** — atualiza `image.repository`/`image.tag` em `apps/springboot/values.yaml` e dá `git commit`+`push`. É esse push que a `Application` da shard-1 (`syncPolicy.automated`) detecta e
-   sincroniza sozinha, disparando o canário descrito na seção anterior.
+4. **`update-values`** — atualiza `image.repository`/`image.tag` em `apps/springboot/values.yaml` e dá `git commit`+`push`. 
 
-**OBS:** Durante as pesquisas para resolver o problema do Docker, encontri o Kaniko que constroi imagens de Containers a partir de um Dockerfile sem precisar do daemon do Docker.
+É esse push que a `Application` da shard-1 (`syncPolicy.automated`) detecta e sincroniza sozinha, disparando o canário descrito na seção anterior.
 
-Pra autenticar no ECR sem guardar nenhuma credencial estática no cluster,
-usei **IRSA** (IAM Roles for Service Accounts): registrei o OIDC issuer
-nativo do próprio cluster EKS como um IAM OIDC Identity Provider, e criei
-uma role IAM com permissão só de push no repositório específico, confiada
-apenas à ServiceAccount usada pelo Workflow (restrita pelo `sub` do token —
-não é "qualquer pod do cluster consegue"). O Kaniko detecta sozinho que o
-destino é ECR e usa as credenciais temporárias que o webhook do EKS injeta
-automaticamente — nenhum `docker login` explícito em lugar nenhum.
+**OBS:** Durante as pesquisas para resolver o problema do Docker, encontri o `Kaniko` que constroi imagens de Containers a partir de um Dockerfile sem precisar do daemon do Docker.
+
+Pra autenticar no ECR sem guardar nenhuma credencial estática no cluster, usei **IRSA** (IAM Roles for Service Accounts): registrei o OIDC issuer
+nativo do próprio cluster EKS como um IAM OIDC Identity Provider, e criei uma role IAM com permissão só de push no repositório específico, confiada
+apenas à ServiceAccount usada pelo Workflow. 
+O Kaniko detecta sozinho que o destino é ECR e usa as credenciais temporárias que o webhook do EKS injeta automaticamente — nenhum `docker login` explícito em lugar nenhum.
 
 ### Disparo automático: preferi polling a webhook
 
-Pra não depender de rodar `argo submit` manualmente toda vez, criei um
-`CronWorkflow` que faz polling no Git periodicamente (`git ls-remote`),
-compara com o último SHA processado, e dispara um novo build só se algo
-realmente mudou. Cheguei a considerar Argo Events (webhook do GitHub) —
-seria instantâneo — mas decidi por polling: não expõe nenhum endpoint novo
-à internet, é sempre o cluster **puxando** informação do GitHub, nunca o
-GitHub entrando no cluster. Pra uma demo, o atraso do intervalo de polling
-é irrelevante; o trade-off só compensaria trocar se algum dia precisar de
-disparo instantâneo de verdade.
+Pra não depender de rodar `argo submit` manualmente toda vez, utilizei o `CronWorkflow` que faz polling no Git periodicamente (`git ls-remote`), ele compara com o último SHA processado, e dispara um novo build só se algo realmente mudou. 
+Cheguei a considerar Argo Events (webhook do GitHub) — seria instantâneo — mas decidi por polling: não expõe nenhum endpoint novo à internet, é sempre o cluster **puxando** informação do GitHub, nunca o
+GitHub entrando no cluster. 
+
+**OBS:** Durante as pesquisas para resolver o problema do start manual encontrei o `CronWorkflow` que é um recurso nativo do Argo Workflows para automatizar a execução de workflows em horários ou intervalos predefinidos.
+
+Pra uma demo, o atraso do intervalo de polling é irrelevante; o trade-off só compensaria trocar se algum dia precisar de disparo instantâneo de verdade.
 
 Um bug real que apareci enquanto testava esse poller: o próprio commit que
 o pipeline faz no `values.yaml` (bump de tag) era detectado como "mudança
