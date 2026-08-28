@@ -9,7 +9,7 @@ por que descartei as alternativas), e os perrengues reais que apareceram
 quando fui rodar tudo de verdade numa conta AWS.
 
 Se você só quer subir o ambiente, pule direto para "Como rodar". Se quer
-entender o raciocínio por trás de cada peça, seguiu o texto na ordem — é
+entender o raciocínio por trás de cada peça, siga o texto na ordem — é
 assim que eu fui construindo.
 
 ## O que o desafio pedia
@@ -32,8 +32,8 @@ Decidi usar **EKS Auto Mode** em vez de gerenciar node groups/Karpenter na
 mão — a AWS cuida do provisionamento de nodes (via Karpenter por baixo,
 mas com uma API própria de `NodeClass`/`NodePool`), da AMI (sempre
 Bottlerocket) e até do Load Balancer Controller nativo. Isso tirou um bocado
-de peça móvel do projeto, mas trouxe algumas particularidades que só descobri
-na prática (conto no meio do texto).
+de peças móveis do projeto, mas trouxe algumas particularidades que só
+descobri na prática (conto no meio do texto).
 
 Em cima disso, a pilha ficou:
 
@@ -41,7 +41,7 @@ Em cima disso, a pilha ficou:
   isolamento físico de verdade, não só um `nodeSelector`.
 - **ECR** para a imagem da aplicação.
 - **ArgoCD** cuidando do GitOps: um `ApplicationSet` único gerando as duas
-  `Application` (uma por shard).
+  `Applications` (uma por shard).
 - **Argo Rollouts** fazendo o canário *dentro* de cada shard.
 - **Argo Workflows** rodando o pipeline de build+push+atualização — decidi
   não usar GitHub Actions, pra manter tudo rodando dentro do próprio
@@ -181,7 +181,7 @@ mudava. Foi o tipo de erro que só aparece rodando `terraform apply` de
 verdade (`spec.generators[0].list.template.spec.destination: Required
 value`), não em nenhuma validação estática.
 
-Um efeito colateral curioso que vale registrar: como as duas `Application`
+Um efeito colateral curioso que vale registrar: como as duas `Applications`
 apontam pro **mesmo** `targetRevision: HEAD` do mesmo repositório, assim
 que o pipeline dá `git push`, a `Application` da shard-2 já aparece
 `OutOfSync` — mesmo com o canário da shard-1 ainda no meio do caminho. Isso
@@ -260,7 +260,7 @@ GitHub entrando no cluster. Pra uma demo, o atraso do intervalo de polling
 é irrelevante; o trade-off só compensaria trocar se algum dia precisar de
 disparo instantâneo de verdade.
 
-Um bug real que apareci enquanto testava esse poller: o próprio commit que
+Um bug real que apareceu enquanto testava esse poller: o próprio commit que
 o pipeline faz no `values.yaml` (bump de tag) era detectado como "mudança
 nova" no polling seguinte, disparando outro build, que fazia outro commit,
 que disparava outro poll — um loop de auto-disparo (vi dezenas de
@@ -311,8 +311,8 @@ objeto.
 **O botão "Resume" não está onde parece.** Testando o gate manual de
 aprovação, não achava o botão de resumir um Workflow suspenso — ele fica na
 barra do **topo da tela do workflow** (ao lado de Retry/Terminate), não
-dentro do card do node suspenso. Fica de aprendizado pra quem for repetir:
-clique no node primeiro pra esse botão aparecer.
+dentro do card do node suspenso. Fica a dica pra quem for repetir: clique
+no node primeiro pra esse botão aparecer.
 
 ## Decisões que assumi conscientemente (trade-offs)
 
@@ -393,8 +393,11 @@ Ficam anotados aqui pra não esquecer (e pra ser honesto sobre o estado
 atual do projeto, caso alguém vá reproduzir):
 
 - A lógica de convergência do DAG de promoção automática/manual (ver
-  "O desafio extra", logo abaixo) não foi validada rodando os três
-  cenários de ponta a ponta.
+  "O desafio extra", logo abaixo) não foi validada rodando de ponta a
+  ponta os três cenários: **(1)** automático com o alarme em `OK` (deve
+  promover a shard-2 sozinho), **(2)** automático com o alarme em `ALARM`
+  ou `INSUFFICIENT_DATA` (deve abortar/rollback a shard-1), e **(3)**
+  manual (deve parar em `Suspended` esperando `argo resume`).
 - O nome do `Service` do ArgoCD Server é assumido como `argocd-server` em
   `outputs.tf` — funcionou na versão do chart que usei, mas não é 100%
   garantido por todas as versões.
