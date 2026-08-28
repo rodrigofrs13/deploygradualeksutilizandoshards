@@ -17,7 +17,7 @@ assim que eu fui construindo.
 Em resumo: um cluster EKS com pelo menos dois NodePools isolados
 fisicamente entre si ("shards"), uma aplicação Java/Spring Boot buildada e
 publicada num repositório ECR próprio, e um deploy gradual em dois níveis —
-um canário dentro de cada shard, e uma promoção controlada (com aprovação
+um Canary Deploy dentro de cada shard, e uma promoção controlada (com aprovação
 manual) de uma shard pra outra, orquestrada por um `ApplicationSet` do
 ArgoCD. Tudo em IaC, com Helm para empacotar o que fosse instalado via
 chart.
@@ -42,7 +42,7 @@ Em cima disso, a pilha ficou:
 - **ECR** para a imagem da aplicação.
 - **ArgoCD** cuidando do GitOps: um `ApplicationSet` único gerando as duas
   `Application` (uma por shard).
-- **Argo Rollouts** fazendo o canário *dentro* de cada shard.
+- **Argo Rollouts** fazendo o Canary Deploy *dentro* de cada shard.
 - **Argo Workflows** rodando o pipeline de build+push+atualização — decidi
   não usar GitHub Actions, pra manter tudo rodando dentro do próprio
   cluster, sem precisar configurar OIDC ou secrets do lado do GitHub.
@@ -66,11 +66,11 @@ flowchart TB
                     CTRL["ArgoCD + Argo Rollouts<br/>+ Argo Workflows"]
 
                     subgraph S1["NodePool shard-1<br/>taint shard=shard-1"]
-                        R1["Rollout springboot<br/>canário 50% → pausa → 100%"]
+                        R1["Rollout springboot<br/>Canary Deploy 50% → pausa → 100%"]
                     end
 
                     subgraph S2["NodePool shard-2<br/>taint shard=shard-2"]
-                        R2["Rollout springboot<br/>canário 50% → pausa → 100%"]
+                        R2["Rollout springboot<br/>Canary Deploy 50% → pausa → 100%"]
                     end
                 end
             end
@@ -97,7 +97,7 @@ Os números seguem a ordem real de um deploy:
 - ② ele builda a imagem com Kaniko e dá push no ECR; 
 - ③ atualiza `apps/springboot/values.yaml` com a
 nova tag e comita de volta no Git; 
-- ④ o ArgoCD detecta o commit e sincroniza a shard-1 sozinho, iniciando o canário; 
+- ④ o ArgoCD detecta o commit e sincroniza a shard-1 sozinho, iniciando o Canary Deploy; 
 - ⑤ só depois que a shard-1 chega a 100%/Healthy é que a promoção da shard-2 fica disponível — manual por
 padrão, ou automática via CloudWatch Alarm se eu ligar o toggle (mais adiante no texto).
 
@@ -125,19 +125,19 @@ não é isolamento, é só direcionamento. Resolvi isso com um **taint**
 Uma limitação que só descobri ao tentar implementar "no máximo 3 EC2 por
 shard": o Karpenter (base do Auto Mode) **não tem** um campo nativo de
 contagem máxima de instâncias — os limites de um `NodePool` são sempre por
-soma de recursos (`limits.cpu`/`limits.memory`). Contornei isso calculando
+soma de recursos (`limits.cpu`/`limits.memory`). Contornei isso pedindo ajuda para uma IA para calcular
 o limite de CPU/memória com base no **maior** tipo de instância aceito,
 multiplicado pelo teto desejado (`locals.tf`) — assim, mesmo que o
 Karpenter só consiga capacidade do tipo maior do conjunto, o teto nunca é
-ultrapassado. Funciona, mas é uma aproximação, não uma trava exata por
+ultrapassado. Não fiz testes exaulstivos mas funcionou nos testes basicos, mas é uma aproximação, não uma trava exata por
 contagem.
 
 ## O deploy gradual em dois níveis
 
-### Dentro da shard: canário com Argo Rollouts
+### Dentro da shard: Canary Deploy com Argo Rollouts
 
-Troquei o `Deployment` padrão por um `Rollout` (CRD do Argo Rollouts), com
-os passos do canário definidos em `apps/springboot/values.yaml`:
+Troquei o `Deployment` padrão por um `Rollout` (Argo Rollouts), com
+os passos do Canary Deploy definidos em `apps/springboot/values.yaml`:
 
 ```yaml
 canary:
@@ -149,9 +149,9 @@ canary:
 
 O detalhe importante aqui é o `pause: {}` **sem** `duration`. Pensei
 inicialmente em pausas cronometradas (promove sozinho depois de X
-segundos), mas o requisito era aprovação manual — então o rollout fica
+segundos), mas um doso requisitos  é a  aprovação manual — então o rollout fica
 parado em 50% indefinidamente até alguém rodar `kubectl argo rollouts
-promote springboot -n shard-1` (ou o plugin equivalente).
+promote springboot -n shard-1` ou utilizar a UI do ArgoCD para promover a continuidade do rollout.
 
 ### Entre shards: um único ApplicationSet, aprovação manual
 
@@ -184,10 +184,10 @@ value`), não em nenhuma validação estática.
 Um efeito colateral curioso que vale registrar: como as duas `Application`
 apontam pro **mesmo** `targetRevision: HEAD` do mesmo repositório, assim
 que o pipeline dá `git push`, a `Application` da shard-2 já aparece
-`OutOfSync` — mesmo com o canário da shard-1 ainda no meio do caminho. Isso
+`OutOfSync` — mesmo com o Canary Deploy da shard-1 ainda no meio do caminho. Isso
 é só comparação (o `repo-server` do ArgoCD vendo que o Git mudou), não um
-deploy: sem `syncPolicy.automated` nesse generator, nada é de fato aplicado
-até alguém confirmar.
+deploy: sem `syncPolicy.automated` nesse generator, nada é de fato um deploy aplicado
+até alguém confirmar. Em uma proxima versão podemos apontar cada Application para uma branch e controlar o deploy entre os shards utilizando o Git promovendo o deploy por exemplo da branch DEV para a branch PROD. 
 
 ## Automatizando o build com Argo Workflows
 
@@ -204,7 +204,7 @@ Docker-in-Docker — importante, porque não tem daemon Docker disponível
 dentro dos pods do cluster) → push no ECR → atualiza
 `apps/springboot/values.yaml` com a nova tag e dá `git commit`+`push`. É
 esse push que a `Application` da shard-1 (que tem `syncPolicy.automated`)
-detecta e sincroniza sozinha, disparando o canário.
+detecta e sincroniza sozinha, disparando o Canary Deploy.
 
 Pra autenticar no ECR sem guardar nenhuma credencial estática no cluster,
 usei **IRSA** (IAM Roles for Service Accounts): registrei o OIDC issuer
@@ -342,7 +342,7 @@ técnico:
   AZ — mais barato, mas se a AZ onde ele está cair, as subnets privadas nas
   outras AZs perdem saída pra internet até ela voltar. Pra produção, eu
   desligaria essa flag.
-- **Sem progressão automática cronometrada** nem no canário
+- **Sem progressão automática cronometrada** nem no Canary Deploy
   (`pause: { duration: ... }`) nem entre shards (o ArgoCD tem um recurso
   nativo pra isso, `Progressive Syncs`/`RollingSync`) — o requisito pedia
   aprovação manual explícita nos dois níveis, então não usei nenhum dos
