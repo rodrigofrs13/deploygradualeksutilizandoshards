@@ -191,12 +191,18 @@ até alguém confirmar.
 
 ## Automatizando o build com Argo Workflows
 
-Toda vez que algo muda em `apps/`, quero que a imagem seja buildada, publicada no ECR e o `values.yaml` atualizado — sem eu precisar rodar nada manualmente
-a maior parte do tempo. Decidi fazer isso com um `WorkflowTemplate` do Argo Workflows em vez de GitHub Actions: assim tudo roda **dentro do cluster**,
+Toda vez que algo muda em `apps/`, quero que a imagem seja buildada, publicada
+no ECR e o `values.yaml` atualizado — sem eu precisar rodar nada manualmente
+a maior parte do tempo. Decidi fazer isso com um `WorkflowTemplate` do Argo
+Workflows em vez de GitHub Actions: assim tudo roda **dentro do cluster**,
 sem precisar configurar OIDC nem secrets do lado do GitHub.
 
-O pipeline vive num único `WorkflowTemplate` (`terraform/platform/argoworkflows-template.tf`), organizado como um `dag:` — falo mais sobre por que DAG (e não uma lista sequencial de
-`steps:`) na seção do Desafio Extra, onde isso realmente importa. Nessa primeira metade do pipeline (as quatro tarefas que buildam e publicam a imagem), o fluxo é linear:
+O pipeline vive num único `WorkflowTemplate`
+(`terraform/platform/argoworkflows-template.tf`), organizado como um
+`dag:` — falo mais sobre por que DAG (e não uma lista sequencial de
+`steps:`) na seção do Desafio Extra, onde isso realmente importa. Nessa
+primeira metade do pipeline (as quatro tarefas que buildam e publicam a
+imagem), o fluxo é linear:
 
 ```mermaid
 flowchart LR
@@ -218,31 +224,41 @@ flowchart LR
     GH2 -- "commit novo detectado" --> ARGOCD["ArgoCD<br/>sync automático shard-1"]
 ```
 
-Os quatro passos, na ordem em que o DAG (Directed Acyclic Graph — grafo acíclico dirigido) os executa:
+Os quatro passos, na ordem em que o DAG os executa:
 
-1. **`clone-repo`** — clona o repositório e captura o SHA curto do commit (`git rev-parse --short HEAD`), usado como tag da imagem daqui pra    frente.
-2. **`maven-build`** — `mvn clean package` dentro de `apps/`, gerando o `.jar` que o `Dockerfile` só copia (não builda a app de novo).
-3. **`kaniko-build-push`** — builda `apps/Dockerfile` com **Kaniko** e dá push no ECR, autenticando via IRSA (explico logo abaixo).
-4. **`update-values`** — atualiza `image.repository`/`image.tag` em `apps/springboot/values.yaml` e dá `git commit`+`push`. 
+1. **`clone-repo`** — clona o repositório e captura o SHA curto do commit
+   (`git rev-parse --short HEAD`), usado como tag da imagem daqui pra
+   frente.
+2. **`maven-build`** — `mvn clean package` dentro de `apps/`, gerando o
+   `.jar` que o `Dockerfile` só copia (não builda a app de novo).
+3. **`kaniko-build-push`** — builda `apps/Dockerfile` com **Kaniko** (sem
+   Docker-in-Docker — não tem daemon Docker disponível dentro de um pod) e
+   dá push no ECR, autenticando via IRSA (explico logo abaixo).
+4. **`update-values`** — atualiza `image.repository`/`image.tag` em
+   `apps/springboot/values.yaml` e dá `git commit`+`push`. É esse push que
+   a `Application` da shard-1 (`syncPolicy.automated`) detecta e
+   sincroniza sozinha, disparando o canário descrito na seção anterior.
 
-É esse push que a `Application` da shard-1 (`syncPolicy.automated`) detecta e sincroniza sozinha, disparando o canário descrito na seção anterior.
-
-**OBS:** Durante as pesquisas para resolver o problema do Docker, encontri o `Kaniko` que constroi imagens de Containers a partir de um Dockerfile sem precisar do daemon do Docker.
-
-Pra autenticar no ECR sem guardar nenhuma credencial estática no cluster, usei **IRSA** (IAM Roles for Service Accounts): registrei o OIDC issuer
-nativo do próprio cluster EKS como um IAM OIDC Identity Provider, e criei uma role IAM com permissão só de push no repositório específico, confiada
-apenas à ServiceAccount usada pelo Workflow. 
-O Kaniko detecta sozinho que o destino é ECR e usa as credenciais temporárias que o webhook do EKS injeta automaticamente — nenhum `docker login` explícito em lugar nenhum.
+Pra autenticar no ECR sem guardar nenhuma credencial estática no cluster,
+usei **IRSA** (IAM Roles for Service Accounts): registrei o OIDC issuer
+nativo do próprio cluster EKS como um IAM OIDC Identity Provider, e criei
+uma role IAM com permissão só de push no repositório específico, confiada
+apenas à ServiceAccount usada pelo Workflow (restrita pelo `sub` do token —
+não é "qualquer pod do cluster consegue"). O Kaniko detecta sozinho que o
+destino é ECR e usa as credenciais temporárias que o webhook do EKS injeta
+automaticamente — nenhum `docker login` explícito em lugar nenhum.
 
 ### Disparo automático: preferi polling a webhook
 
-Pra não depender de rodar `argo submit` manualmente toda vez, utilizei o `CronWorkflow` que faz polling no Git periodicamente (`git ls-remote`), ele compara com o último SHA processado, e dispara um novo build só se algo realmente mudou. 
-Cheguei a considerar Argo Events (webhook do GitHub) — seria instantâneo — mas decidi por polling: não expõe nenhum endpoint novo à internet, é sempre o cluster **puxando** informação do GitHub, nunca o
-GitHub entrando no cluster. 
-
-**OBS:** Durante as pesquisas para resolver o problema do start manual encontrei o `CronWorkflow` que é um recurso nativo do Argo Workflows para automatizar a execução de workflows em horários ou intervalos predefinidos.
-
-Pra uma demo, o atraso do intervalo de polling é irrelevante; o trade-off só compensaria trocar se algum dia precisar de disparo instantâneo de verdade.
+Pra não depender de rodar `argo submit` manualmente toda vez, criei um
+`CronWorkflow` que faz polling no Git periodicamente (`git ls-remote`),
+compara com o último SHA processado, e dispara um novo build só se algo
+realmente mudou. Cheguei a considerar Argo Events (webhook do GitHub) —
+seria instantâneo — mas decidi por polling: não expõe nenhum endpoint novo
+à internet, é sempre o cluster **puxando** informação do GitHub, nunca o
+GitHub entrando no cluster. Pra uma demo, o atraso do intervalo de polling
+é irrelevante; o trade-off só compensaria trocar se algum dia precisar de
+disparo instantâneo de verdade.
 
 Um bug real que apareci enquanto testava esse poller: o próprio commit que
 o pipeline faz no `values.yaml` (bump de tag) era detectado como "mudança
@@ -252,51 +268,6 @@ que disparava outro poll — um loop de auto-disparo (vi dezenas de
 explicitamente: só considero "mudança de verdade" se o diff entre os dois
 SHAs tiver algum arquivo sob `apps/` **além** do próprio
 `apps/springboot/values.yaml`.
-
-## O desafio extra: promoção automática via CloudWatch Alarm
-
-A proposta do desafio extra era: depois que a shard-1 chegasse a 100%, o
-pipeline devia consultar um alarme do CloudWatch — se `OK`, promove a
-shard-2 sozinho; se `ALARM`/`INSUFFICIENT_DATA`, faz rollback da shard-1.
-
-Em vez de escolher entre "sempre manual" ou "sempre automático" na hora de
-aplicar o Terraform, resolvi deixar isso como um **toggle em tempo de
-execução**, lido direto do `values.yaml`:
-
-```yaml
-# apps/springboot/values.yaml
-promotion:
-  automaticApproval: false   # true = automático (CloudWatch) / false = manual (suspend)
-  cloudWatchAlarmName: "eks-automode-dev-springboot-shard1-health"
-```
-
-Trocar de modo vira só um commit — nenhum `terraform apply` novo. Pra isso
-funcionar, precisei reestruturar o template principal do `steps:`
-sequencial que eu tinha pra um `dag:`: a partir do momento em que a shard-1
-fica `Healthy`, o fluxo se ramifica (checa o alarme OU espera aprovação
-manual, dependendo do toggle) e depois converge de volta num único passo de
-promoção.
-
-A parte mais delicada foi a lógica de convergência: como só uma das duas
-ramificações realmente roda (a outra fica `Skipped`, dependendo do
-`when`), o `depends` do passo de convergência precisou considerar as duas
-possibilidades — `Succeeded` **ou** `Skipped` — pros dois lados. Registrei
-isso explicitamente no código como um ponto de atenção: a lógica segue a
-documentação do Argo Workflows, mas eu não validei os três cenários
-(automático+OK, automático+ALARM, manual) rodando de ponta a ponta ainda.
-
-Pra testar sem depender de nenhuma métrica de verdade publicada, criei um
-alarme de teste (`cloudwatch-alarm.tf`, `treat_missing_data = "breaching"`
-— ou seja, sem dado nenhum ele já bloqueia por padrão, nunca promove "por
-acidente") e forço o estado manualmente:
-
-```bash
-aws cloudwatch set-alarm-state \
-  --alarm-name eks-automode-dev-springboot-shard1-health \
-  --state-value OK \
-  --state-reason "teste manual" \
-  --region us-east-1
-```
 
 ## Os perrengues que mais me custaram tempo
 
@@ -371,6 +342,11 @@ técnico:
 
 ## Como rodar você mesmo
 
+Este resumo cobre só os comandos essenciais. O passo a passo completo —
+com todos os comandos, o que esperar em cada etapa, e como reconhecer/
+resolver os problemas mais comuns (incluindo os perrengues que descrevi
+acima) — está em [`TESTE-END-TO-END.md`](./TESTE-END-TO-END.md).
+
 Pré-requisitos: Terraform >= 1.4.4, AWS CLI configurado, Helm >= 3.8
 (usado internamente pelo provider), permissões IAM pra criar VPC/EKS/IAM
 Roles/ECR, `kubectl` + [plugin do Argo Rollouts](https://argo-rollouts.readthedocs.io/en/stable/installation/#kubectl-plugin-installation),
@@ -394,10 +370,6 @@ terraform apply \
   -var-file=environment/dev/terraform.tfvars \
   -var-file=environment/dev/secrets.tfvars
 ```
-
-O passo a passo completo — com todos os comandos, o que esperar em cada
-etapa e como reconhecer/resolver os problemas mais comuns (incluindo os que
-descrevi acima) — está em `TESTE-END-TO-END.md`.
 
 ### Como destruir
 
@@ -423,8 +395,9 @@ atual do projeto, caso alguém vá reproduzir):
 - `terraform/infra/locals.tf` duplica um cálculo que só é usado em
   `terraform/platform` — virou código morto em `infra` depois que dividi o
   projeto em duas camadas. Ainda não limpei.
-- A lógica de convergência do DAG de promoção automática/manual (ver acima)
-  não foi validada rodando os três cenários de ponta a ponta.
+- A lógica de convergência do DAG de promoção automática/manual (ver
+  "O desafio extra", logo abaixo) não foi validada rodando os três
+  cenários de ponta a ponta.
 - O nome do `Service` do ArgoCD Server é assumido como `argocd-server` em
   `outputs.tf` — funcionou na versão do chart que usei, mas não é 100%
   garantido por todas as versões.
@@ -433,6 +406,53 @@ atual do projeto, caso alguém vá reproduzir):
   vez de NLB direto, HA no ArgoCD (`redis-ha.enabled`), e trocar o polling
   do Argo Workflows por um webhook (Argo Events) se precisar de disparo
   instantâneo.
+
+## Bônus: o desafio extra — promoção automática via CloudWatch Alarm
+
+Isso não fazia parte do requisito principal, mas resolvi implementar
+porque o enunciado do desafio trazia como bônus: depois que a shard-1
+chegasse a 100%, o pipeline devia consultar um alarme do CloudWatch — se
+`OK`, promove a shard-2 sozinho; se `ALARM`/`INSUFFICIENT_DATA`, faz
+rollback da shard-1.
+
+Em vez de escolher entre "sempre manual" ou "sempre automático" na hora de
+aplicar o Terraform, resolvi deixar isso como um **toggle em tempo de
+execução**, lido direto do `values.yaml`:
+
+```yaml
+# apps/springboot/values.yaml
+promotion:
+  automaticApproval: false   # true = automático (CloudWatch) / false = manual (suspend)
+  cloudWatchAlarmName: "eks-automode-dev-springboot-shard1-health"
+```
+
+Trocar de modo vira só um commit — nenhum `terraform apply` novo. Pra isso
+funcionar, precisei reestruturar o template principal do `steps:`
+sequencial que eu tinha pra um `dag:`: a partir do momento em que a shard-1
+fica `Healthy`, o fluxo se ramifica (checa o alarme OU espera aprovação
+manual, dependendo do toggle) e depois converge de volta num único passo de
+promoção.
+
+A parte mais delicada foi a lógica de convergência: como só uma das duas
+ramificações realmente roda (a outra fica `Skipped`, dependendo do
+`when`), o `depends` do passo de convergência precisou considerar as duas
+possibilidades — `Succeeded` **ou** `Skipped` — pros dois lados. Registrei
+isso explicitamente no código como um ponto de atenção: a lógica segue a
+documentação do Argo Workflows, mas eu não validei os três cenários
+(automático+OK, automático+ALARM, manual) rodando de ponta a ponta ainda.
+
+Pra testar sem depender de nenhuma métrica de verdade publicada, criei um
+alarme de teste (`cloudwatch-alarm.tf`, `treat_missing_data = "breaching"`
+— ou seja, sem dado nenhum ele já bloqueia por padrão, nunca promove "por
+acidente") e forço o estado manualmente:
+
+```bash
+aws cloudwatch set-alarm-state \
+  --alarm-name eks-automode-dev-springboot-shard1-health \
+  --state-value OK \
+  --state-reason "teste manual" \
+  --region us-east-1
+```
 
 ## Fechando
 
