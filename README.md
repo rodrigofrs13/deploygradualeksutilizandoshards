@@ -227,7 +227,7 @@ flowchart LR
 Os quatro passos, na ordem em que o DAG os executa:
 
 1. **`clone-repo`** — clona o repositório e captura o SHA curto do commit
-   (`git rev-parse --short HEAD`), usado como tag da imagem daqui pra
+   (`git rev-parse --short HEAD`), usado como tag da imagem daqui para
    frente.
 2. **`maven-build`** — `mvn clean package` dentro de `apps/`, gerando o
    `.jar` que o `Dockerfile` só copia (não builda a app de novo).
@@ -370,6 +370,8 @@ atual do projeto, caso alguém vá reproduzir):
 
 ## Bônus: o desafio extra — promoção automática via CloudWatch Alarm
 
+**OBS:** Ainda estou testando não está 100% finalizado. 
+
 Isso não fazia parte do requisito principal, mas resolvi implementar
 porque o enunciado do desafio trazia como bônus: depois que a shard-1
 chegasse a 100%, o pipeline devia consultar um alarme do CloudWatch — se
@@ -422,8 +424,10 @@ EKS Auto Mode (rede, storage, load balancer, RBAC) tem uma convenção
 própria e ligeiramente diferente do EKS "clássico" — e boa parte do tempo
 não foi escrever o Terraform em si, foi debugar por que um componente que
 "deveria simplesmente funcionar" ficava preso esperando algo que eu nem
-sabia que precisava declarar explicitamente (a `StorageClass`, o
-`map_public_ip_on_launch`, o RBAC de subresource). Deixei essas histórias
+sabia que precisava declarar explicitamente (o `StorageClass` e o
+`map_public_ip_on_launch`) por exemplo. 
+
+Deixei essas histórias
 no texto de propósito — se você estiver implementando algo parecido, é bem
 provável que bata numa delas.
 
