@@ -18,13 +18,13 @@ Em resumo: um cluster EKS com pelo menos dois NodePools isolados
 fisicamente entre si ("shards"), uma aplicação Java/Spring Boot buildada e
 publicada num repositório ECR próprio, e um deploy gradual em dois níveis —
 um canário dentro de cada shard, e uma promoção controlada (com aprovação
-manual) de uma shard para outra, orquestrada por um `ApplicationSet` do
+manual) de uma shard pra outra, orquestrada por um `ApplicationSet` do
 ArgoCD. Tudo em IaC, com Helm para empacotar o que fosse instalado via
 chart.
 
 Tinha também um desafio extra, opcional: automatizar a promoção entre
 shards usando um alarme do CloudWatch como critério de decisão em vez de um
-clique manual. Voltei nisso mais para frente no texto.
+clique manual. Voltei nisso mais pra frente no texto.
 
 ## A arquitetura que montei
 
@@ -44,7 +44,7 @@ Em cima disso, a pilha ficou:
   `Application` (uma por shard).
 - **Argo Rollouts** fazendo o canário *dentro* de cada shard.
 - **Argo Workflows** rodando o pipeline de build+push+atualização — decidi
-  não usar GitHub Actions, para manter tudo rodando dentro do próprio
+  não usar GitHub Actions, pra manter tudo rodando dentro do próprio
   cluster, sem precisar configurar OIDC ou secrets do lado do GitHub.
 
 No papel, a topologia ficou assim:
@@ -159,9 +159,9 @@ Esse foi o ponto onde apanhei mais. O requisito pedia **um** `ApplicationSet`
 controlando o deploy nas duas shards — não dois recursos separados. Minha
 primeira tentativa foi um único generator `list` com os dois shards como
 elementos. Não funciona: o override de `template` no ArgoCD é aplicado por
-**generator**, não por elemento dentro da lista — então dava para variar
+**generator**, não por elemento dentro da lista — então dava pra variar
 tudo entre as shards, menos o `syncPolicy` (que era exatamente o que eu
-precisava diferenciar, para shard-1 sincronizar sozinha e shard-2 esperar
+precisava diferenciar, pra shard-1 sincronizar sozinha e shard-2 esperar
 aprovação).
 
 A solução foi usar **dois generators `list`** dentro do mesmo
@@ -227,7 +227,7 @@ flowchart LR
 Os quatro passos, na ordem em que o DAG os executa:
 
 1. **`clone-repo`** — clona o repositório e captura o SHA curto do commit
-   (`git rev-parse --short HEAD`), usado como tag da imagem daqui para
+   (`git rev-parse --short HEAD`), usado como tag da imagem daqui pra
    frente.
 2. **`maven-build`** — `mvn clean package` dentro de `apps/`, gerando o
    `.jar` que o `Dockerfile` só copia (não builda a app de novo).
@@ -239,7 +239,7 @@ Os quatro passos, na ordem em que o DAG os executa:
    a `Application` da shard-1 (`syncPolicy.automated`) detecta e
    sincroniza sozinha, disparando o canário descrito na seção anterior.
 
-Para autenticar no ECR sem guardar nenhuma credencial estática no cluster,
+Pra autenticar no ECR sem guardar nenhuma credencial estática no cluster,
 usei **IRSA** (IAM Roles for Service Accounts): registrei o OIDC issuer
 nativo do próprio cluster EKS como um IAM OIDC Identity Provider, e criei
 uma role IAM com permissão só de push no repositório específico, confiada
@@ -250,13 +250,13 @@ automaticamente — nenhum `docker login` explícito em lugar nenhum.
 
 ### Disparo automático: preferi polling a webhook
 
-Para não depender de rodar `argo submit` manualmente toda vez, criei um
+Pra não depender de rodar `argo submit` manualmente toda vez, criei um
 `CronWorkflow` que faz polling no Git periodicamente (`git ls-remote`),
 compara com o último SHA processado, e dispara um novo build só se algo
 realmente mudou. Cheguei a considerar Argo Events (webhook do GitHub) —
 seria instantâneo — mas decidi por polling: não expõe nenhum endpoint novo
 à internet, é sempre o cluster **puxando** informação do GitHub, nunca o
-GitHub entrando no cluster. para uma demo, o atraso do intervalo de polling
+GitHub entrando no cluster. Pra uma demo, o atraso do intervalo de polling
 é irrelevante; o trade-off só compensaria trocar se algum dia precisar de
 disparo instantâneo de verdade.
 
@@ -274,7 +274,7 @@ SHAs tiver algum arquivo sob `apps/` **além** do próprio
 Vale registrar os que não eram óbvios de antemão:
 
 **Nodes que nunca se registravam no cluster.** Depois de aplicar a infra, o
-pod do Argo Workflows ficava `Pending` para sempre — o Karpenter criava o
+pod do Argo Workflows ficava `Pending` pra sempre — o Karpenter criava o
 `NodeClaim`, a EC2 subia, mas o node nunca aparecia no cluster
 (`Registered=Unknown`, "Node not registered with cluster"). Rastreei até a
 VPC: as subnets públicas não tinham `map_public_ip_on_launch = true`, e o
@@ -287,15 +287,15 @@ plane. Corrigi isso direto no módulo da VPC (`terraform/infra/vpc.tf`).
 `IMMUTABLE` — rodar o pipeline duas vezes pro mesmo commit falha no push
 porque a tag já existe. É proteção, não bug (evita sobrescrever uma imagem
 já publicada), mas atrapalha testar o mesmo commit de novo — criei
-`scripts/04-delete-ecr-images.sh` para limpar o repositório antes de um
+`scripts/04-delete-ecr-images.sh` pra limpar o repositório antes de um
 `terraform destroy`/re-teste.
 
 **StorageClass que o Auto Mode não cria sozinho.** O `WorkflowTemplate`
-precisa de um PVC para compartilhar o clone do repositório entre os passos
+precisa de um PVC pra compartilhar o clone do repositório entre os passos
 (cada passo do Argo Workflows roda num pod separado — um `emptyDir` não
 sobrevive entre eles). A `StorageClass` `gp2` que já vem em qualquer
 cluster EKS usa um provisioner legado que não roda no Auto Mode — o volume
-ficava preso para sempre em `Pending`. O Auto Mode usa um provisioner
+ficava preso pra sempre em `Pending`. O Auto Mode usa um provisioner
 próprio (`ebs.csi.eks.amazonaws.com`, com "eks" no meio), e — ao contrário
 do que a documentação de "block storage capability" sugere — não cria
 nenhuma `StorageClass` sozinho; precisei criar a minha
@@ -311,66 +311,100 @@ objeto.
 **O botão "Resume" não está onde parece.** Testando o gate manual de
 aprovação, não achava o botão de resumir um Workflow suspenso — ele fica na
 barra do **topo da tela do workflow** (ao lado de Retry/Terminate), não
-dentro do card do node suspenso. Fica de aprendizado para quem for repetir:
-clique no node primeiro para esse botão aparecer.
+dentro do card do node suspenso. Fica de aprendizado pra quem for repetir:
+clique no node primeiro pra esse botão aparecer.
 
 ## Decisões que assumi conscientemente (trade-offs)
 
 Nem tudo que fica funcionando é a escolha "certa" em produção — algumas
-coisas eu decidi deliberadamente para manter o escopo de uma demo/teste
+coisas eu decidi deliberadamente pra manter o escopo de uma demo/teste
 técnico:
 
 - **NLBs públicos (`internet-facing`) pro ArgoCD, Argo Workflows e as
   apps.** Combinado com `--auth-mode=server` no Argo Workflows (UI sem
   exigir login), isso significa que qualquer pessoa com o hostname
   consegue não só visualizar, mas **disparar/abortar** workflows sem
-  autenticação. Aceitável para um teste de curta duração; numa situação real
-  eu trocaria para `internal` ou colocaria atrás de VPN/bastion.
+  autenticação. Aceitável pra um teste de curta duração; numa situação real
+  eu trocaria pra `internal` ou colocaria atrás de VPN/bastion.
 - **Um único NAT Gateway** (`single_nat_gateway = true`) em vez de um por
   AZ — mais barato, mas se a AZ onde ele está cair, as subnets privadas nas
-  outras AZs perdem saída para internet até ela voltar. para produção, eu
+  outras AZs perdem saída pra internet até ela voltar. Pra produção, eu
   desligaria essa flag.
 - **Sem progressão automática cronometrada** nem no canário
   (`pause: { duration: ... }`) nem entre shards (o ArgoCD tem um recurso
-  nativo para isso, `Progressive Syncs`/`RollingSync`) — o requisito pedia
+  nativo pra isso, `Progressive Syncs`/`RollingSync`) — o requisito pedia
   aprovação manual explícita nos dois níveis, então não usei nenhum dos
   dois de propósito.
 - **Repositório GitHub público** — o Secret que permitiria o ArgoCD clonar
   um repositório privado (`argocd-github-secret.tf`) está no código, mas
-  comentado. para reativar, é só descomentar (reaproveita as mesmas
+  comentado. Pra reativar, é só descomentar (reaproveita as mesmas
   variáveis já usadas pelo Argo Workflow).
 
 ## Como rodar você mesmo
 
-O passo a passo completo —
+Este resumo cobre só os comandos essenciais. O passo a passo completo —
 com todos os comandos, o que esperar em cada etapa, e como reconhecer/
 resolver os problemas mais comuns (incluindo os perrengues que descrevi
 acima) — está em [`TESTE-END-TO-END.md`](./TESTE-END-TO-END.md).
 
+Pré-requisitos: Terraform >= 1.4.4, AWS CLI configurado, Helm >= 3.8
+(usado internamente pelo provider), permissões IAM pra criar VPC/EKS/IAM
+Roles/ECR, `kubectl` + [plugin do Argo Rollouts](https://argo-rollouts.readthedocs.io/en/stable/installation/#kubectl-plugin-installation),
+opcionalmente o [Argo Workflows CLI](https://argo-workflows.readthedocs.io/en/latest/walk-through/argo-cli/)
+e o [ArgoCD CLI](https://argo-cd.readthedocs.io/en/stable/cli_installation/),
+e um Personal Access Token do GitHub (escopo `repo`) pro Argo Workflow
+conseguir dar `git push` de volta no repositório.
+
+```bash
+# Etapa 1 — infraestrutura AWS (VPC, IAM, cluster EKS, ECR)
+cd terraform/infra
+terraform init
+terraform apply -var-file=environment/dev/terraform.tfvars
+
+# Etapa 2 — NodePools, ArgoCD, Argo Rollouts, Argo Workflows, Project e ApplicationSet
+cd ../platform
+cp environment/dev/secrets.tfvars.example environment/dev/secrets.tfvars
+# edite environment/dev/secrets.tfvars com seu github_username/github_token
+terraform init
+terraform apply \
+  -var-file=environment/dev/terraform.tfvars \
+  -var-file=environment/dev/secrets.tfvars
+```
+
+### Como destruir
+
+Ordem inversa: `platform` primeiro (o cluster precisa continuar de pé pro
+Terraform remover graciosamente os recursos Kubernetes/Helm), `infra`
+depois:
+
+```bash
+cd terraform/platform
+terraform destroy \
+  -var-file=environment/dev/terraform.tfvars \
+  -var-file=environment/dev/secrets.tfvars
+
+cd ../infra
+terraform destroy -var-file=environment/dev/terraform.tfvars
+```
 
 ## O que eu ainda quero arrumar
 
-Ficam anotados aqui para não esquecer (e para ser honesto sobre o estado
+Ficam anotados aqui pra não esquecer (e pra ser honesto sobre o estado
 atual do projeto, caso alguém vá reproduzir):
 
-- `terraform/infra/locals.tf` duplica um cálculo que só é usado em
-  `terraform/platform` — virou código morto em `infra` depois que dividi o
-  projeto em duas camadas. Ainda não limpei.
 - A lógica de convergência do DAG de promoção automática/manual (ver
   "O desafio extra", logo abaixo) não foi validada rodando os três
   cenários de ponta a ponta.
 - O nome do `Service` do ArgoCD Server é assumido como `argocd-server` em
   `outputs.tf` — funcionou na versão do chart que usei, mas não é 100%
   garantido por todas as versões.
-- Para produção de verdade: múltiplos NAT Gateways, backend remoto (S3 +
+- Pra produção de verdade: múltiplos NAT Gateways, backend remoto (S3 +
   DynamoDB) pro state de cada camada, exposição via Ingress/ALB com TLS em
   vez de NLB direto, HA no ArgoCD (`redis-ha.enabled`), e trocar o polling
   do Argo Workflows por um webhook (Argo Events) se precisar de disparo
   instantâneo.
 
 ## Bônus: o desafio extra — promoção automática via CloudWatch Alarm
-
-**OBS:** Ainda estou testando não está 100% finalizado. 
 
 Isso não fazia parte do requisito principal, mas resolvi implementar
 porque o enunciado do desafio trazia como bônus: depois que a shard-1
@@ -389,9 +423,9 @@ promotion:
   cloudWatchAlarmName: "eks-automode-dev-springboot-shard1-health"
 ```
 
-Trocar de modo vira só um commit — nenhum `terraform apply` novo. paraisso
+Trocar de modo vira só um commit — nenhum `terraform apply` novo. Pra isso
 funcionar, precisei reestruturar o template principal do `steps:`
-sequencial que eu tinha para um `dag:`: a partir do momento em que a shard-1
+sequencial que eu tinha pra um `dag:`: a partir do momento em que a shard-1
 fica `Healthy`, o fluxo se ramifica (checa o alarme OU espera aprovação
 manual, dependendo do toggle) e depois converge de volta num único passo de
 promoção.
@@ -404,7 +438,7 @@ isso explicitamente no código como um ponto de atenção: a lógica segue a
 documentação do Argo Workflows, mas eu não validei os três cenários
 (automático+OK, automático+ALARM, manual) rodando de ponta a ponta ainda.
 
-Para testar sem depender de nenhuma métrica de verdade publicada, criei um
+Pra testar sem depender de nenhuma métrica de verdade publicada, criei um
 alarme de teste (`cloudwatch-alarm.tf`, `treat_missing_data = "breaching"`
 — ou seja, sem dado nenhum ele já bloqueia por padrão, nunca promove "por
 acidente") e forço o estado manualmente:
@@ -419,15 +453,13 @@ aws cloudwatch set-alarm-state \
 
 ## Fechando
 
-O maior aprendizado técnico desse projeto para mim foi como cada camada do
+O maior aprendizado técnico desse projeto pra mim foi como cada camada do
 EKS Auto Mode (rede, storage, load balancer, RBAC) tem uma convenção
 própria e ligeiramente diferente do EKS "clássico" — e boa parte do tempo
 não foi escrever o Terraform em si, foi debugar por que um componente que
 "deveria simplesmente funcionar" ficava preso esperando algo que eu nem
-sabia que precisava declarar explicitamente (o `StorageClass` e o
-`map_public_ip_on_launch`) por exemplo. 
-
-Deixei essas histórias
+sabia que precisava declarar explicitamente (a `StorageClass`, o
+`map_public_ip_on_launch`, o RBAC de subresource). Deixei essas histórias
 no texto de propósito — se você estiver implementando algo parecido, é bem
 provável que bata numa delas.
 
