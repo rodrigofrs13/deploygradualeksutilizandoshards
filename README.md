@@ -466,6 +466,8 @@ sabia que precisava declarar explicitamente (a `StorageClass`, o
 no texto de propósito — se você estiver implementando algo parecido, é bem
 provável que bata numa delas.
 
+O tempo gasto entre pesquisa, implementação e testes até o momento foram de 20 horas.
+
 O código completo está neste repositório; o passo a passo operacional
 detalhado (comandos exatos, o que esperar em cada tela) está em
 `TESTE-END-TO-END.md`.
