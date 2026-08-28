@@ -34,7 +34,7 @@ promotion:
   # true  = aprovação AUTOMÁTICA: o Workflow consulta o CloudWatch Alarm abaixo depois que a shard-1 chegar a Healthy — se o estado for
   #         OK, promove a shard-2 sozinho; se for ALARM ou INSUFFICIENT_DATA, aborta (rollback) o rollout da shard-1.
   # false = aprovação MANUAL (como era antes): o Workflow fica suspenso na UI do Argo Workflows até alguém clicar "Resume".
-  automaticApproval: false
+  automaticApproval: true
   # Nome do CloudWatch Alarm consultado quando automaticApproval=true.
   # Criado em terraform/platform/cloudwatch-alarm.tf — hoje é um alarme de TESTE (métrica própria, sem nada publicando nela ainda); veja o
   # comentário desse arquivo pra saber como forçar cada estado manualmente  pra testar o fluxo automático.
