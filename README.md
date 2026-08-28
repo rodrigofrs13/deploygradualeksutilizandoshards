@@ -17,7 +17,7 @@ assim que eu fui construindo.
 Em resumo: um cluster EKS com pelo menos dois NodePools isolados
 fisicamente entre si ("shards"), uma aplicação Java/Spring Boot buildada e
 publicada num repositório ECR próprio, e um deploy gradual em dois níveis —
-um Canary Deploy dentro de cada shard, e uma promoção controlada (com aprovação
+um canário dentro de cada shard, e uma promoção controlada (com aprovação
 manual) de uma shard pra outra, orquestrada por um `ApplicationSet` do
 ArgoCD. Tudo em IaC, com Helm para empacotar o que fosse instalado via
 chart.
@@ -42,7 +42,7 @@ Em cima disso, a pilha ficou:
 - **ECR** para a imagem da aplicação.
 - **ArgoCD** cuidando do GitOps: um `ApplicationSet` único gerando as duas
   `Application` (uma por shard).
-- **Argo Rollouts** fazendo o Canary Deploy *dentro* de cada shard.
+- **Argo Rollouts** fazendo o canário *dentro* de cada shard.
 - **Argo Workflows** rodando o pipeline de build+push+atualização — decidi
   não usar GitHub Actions, pra manter tudo rodando dentro do próprio
   cluster, sem precisar configurar OIDC ou secrets do lado do GitHub.
@@ -66,11 +66,11 @@ flowchart TB
                     CTRL["ArgoCD + Argo Rollouts<br/>+ Argo Workflows"]
 
                     subgraph S1["NodePool shard-1<br/>taint shard=shard-1"]
-                        R1["Rollout springboot<br/>Canary Deploy 50% → pausa → 100%"]
+                        R1["Rollout springboot<br/>canário 50% → pausa → 100%"]
                     end
 
                     subgraph S2["NodePool shard-2<br/>taint shard=shard-2"]
-                        R2["Rollout springboot<br/>Canary Deploy 50% → pausa → 100%"]
+                        R2["Rollout springboot<br/>canário 50% → pausa → 100%"]
                     end
                 end
             end
@@ -92,14 +92,14 @@ flowchart TB
     R2 --- NLB_APP
 ```
 
-Os números seguem a ordem real de um deploy: 
-- ① um `git push` em `apps/` dispara o Argo Workflow (por polling ou manual); 
-- ② ele builda a imagem com Kaniko e dá push no ECR; 
-- ③ atualiza `apps/springboot/values.yaml` com a
-nova tag e comita de volta no Git; 
-- ④ o ArgoCD detecta o commit e sincroniza a shard-1 sozinho, iniciando o Canary Deploy; 
-- ⑤ só depois que a shard-1 chega a 100%/Healthy é que a promoção da shard-2 fica disponível — manual por
-padrão, ou automática via CloudWatch Alarm se eu ligar o toggle (mais adiante no texto).
+Os números seguem a ordem real de um deploy: ① um `git push` em `apps/`
+dispara o Argo Workflow (por polling ou manual); ② ele builda a imagem com
+Kaniko e dá push no ECR; ③ atualiza `apps/springboot/values.yaml` com a
+nova tag e comita de volta no Git; ④ o ArgoCD detecta o commit e sincroniza
+a shard-1 sozinho, iniciando o canário; ⑤ só depois que a shard-1 chega a
+100%/Healthy é que a promoção da shard-2 fica disponível — manual por
+padrão, ou automática via CloudWatch Alarm se eu ligar o toggle (mais
+adiante no texto).
 
 O código Terraform ficou dividido em **duas camadas com states
 independentes**: `terraform/infra` (VPC, IAM, o cluster EKS em si, ECR — só
@@ -125,19 +125,19 @@ não é isolamento, é só direcionamento. Resolvi isso com um **taint**
 Uma limitação que só descobri ao tentar implementar "no máximo 3 EC2 por
 shard": o Karpenter (base do Auto Mode) **não tem** um campo nativo de
 contagem máxima de instâncias — os limites de um `NodePool` são sempre por
-soma de recursos (`limits.cpu`/`limits.memory`). Contornei isso pedindo ajuda para uma IA para calcular
+soma de recursos (`limits.cpu`/`limits.memory`). Contornei isso calculando
 o limite de CPU/memória com base no **maior** tipo de instância aceito,
 multiplicado pelo teto desejado (`locals.tf`) — assim, mesmo que o
 Karpenter só consiga capacidade do tipo maior do conjunto, o teto nunca é
-ultrapassado. Não fiz testes exaulstivos mas funcionou nos testes basicos, mas é uma aproximação, não uma trava exata por
+ultrapassado. Funciona, mas é uma aproximação, não uma trava exata por
 contagem.
 
 ## O deploy gradual em dois níveis
 
-### Dentro da shard: Canary Deploy com Argo Rollouts
+### Dentro da shard: canário com Argo Rollouts
 
-Troquei o `Deployment` padrão por um `Rollout` (Argo Rollouts), com
-os passos do Canary Deploy definidos em `apps/springboot/values.yaml`:
+Troquei o `Deployment` padrão por um `Rollout` (CRD do Argo Rollouts), com
+os passos do canário definidos em `apps/springboot/values.yaml`:
 
 ```yaml
 canary:
@@ -149,9 +149,9 @@ canary:
 
 O detalhe importante aqui é o `pause: {}` **sem** `duration`. Pensei
 inicialmente em pausas cronometradas (promove sozinho depois de X
-segundos), mas um doso requisitos  é a  aprovação manual — então o rollout fica
+segundos), mas o requisito era aprovação manual — então o rollout fica
 parado em 50% indefinidamente até alguém rodar `kubectl argo rollouts
-promote springboot -n shard-1` ou utilizar a UI do ArgoCD para promover a continuidade do rollout.
+promote springboot -n shard-1` (ou o plugin equivalente).
 
 ### Entre shards: um único ApplicationSet, aprovação manual
 
@@ -184,27 +184,49 @@ value`), não em nenhuma validação estática.
 Um efeito colateral curioso que vale registrar: como as duas `Application`
 apontam pro **mesmo** `targetRevision: HEAD` do mesmo repositório, assim
 que o pipeline dá `git push`, a `Application` da shard-2 já aparece
-`OutOfSync` — mesmo com o Canary Deploy da shard-1 ainda no meio do caminho. Isso
+`OutOfSync` — mesmo com o canário da shard-1 ainda no meio do caminho. Isso
 é só comparação (o `repo-server` do ArgoCD vendo que o Git mudou), não um
-deploy: sem `syncPolicy.automated` nesse generator, nada é de fato um deploy aplicado
-até alguém confirmar. Em uma proxima versão podemos apontar cada Application para uma branch e controlar o deploy entre os shards utilizando o Git promovendo o deploy por exemplo da branch DEV para a branch PROD. 
+deploy: sem `syncPolicy.automated` nesse generator, nada é de fato aplicado
+até alguém confirmar.
 
 ## Automatizando o build com Argo Workflows
 
-Toda vez que algo muda em `apps/`, quero que a imagem seja buildada, publicada
-no ECR e o `values.yaml` atualizado — sem eu precisar rodar nada manualmente
-a maior parte do tempo. Decidi fazer isso com um `WorkflowTemplate` do Argo
-Workflows em vez de GitHub Actions: assim tudo roda **dentro do cluster**,
+Toda vez que algo muda em `apps/`, quero que a imagem seja buildada, publicada no ECR e o `values.yaml` atualizado — sem eu precisar rodar nada manualmente
+a maior parte do tempo. Decidi fazer isso com um `WorkflowTemplate` do Argo Workflows em vez de GitHub Actions: assim tudo roda **dentro do cluster**,
 sem precisar configurar OIDC nem secrets do lado do GitHub.
 
-O pipeline (`terraform/platform/argoworkflows-template.tf`) faz, em
-sequência: clona o repositório e captura o SHA do commit como tag da
-imagem → `mvn clean package` → build da imagem com **Kaniko** (sem
-Docker-in-Docker — importante, porque não tem daemon Docker disponível
-dentro dos pods do cluster) → push no ECR → atualiza
-`apps/springboot/values.yaml` com a nova tag e dá `git commit`+`push`. É
-esse push que a `Application` da shard-1 (que tem `syncPolicy.automated`)
-detecta e sincroniza sozinha, disparando o Canary Deploy.
+O pipeline vive num único `WorkflowTemplate` (`terraform/platform/argoworkflows-template.tf`), organizado como um `dag:` — falo mais sobre por que DAG (e não uma lista sequencial de
+`steps:`) na seção do Desafio Extra, onde isso realmente importa. Nessa primeira metade do pipeline (as quatro tarefas que buildam e publicam a imagem), o fluxo é linear:
+
+```mermaid
+flowchart LR
+    subgraph GATILHO["Como o Workflow é criado"]
+        POLL["CronWorkflow<br/>git-poll-trigger<br/>(polling periódico)"]
+        MANUAL["argo submit --from<br/>workflowtemplate/build-push-springboot<br/>(manual, opcional)"]
+    end
+
+    subgraph DAG["dag.tasks · build-and-deploy (WorkflowTemplate)"]
+        direction LR
+        T1["① clone-repo"] --> T2["② maven-build"] --> T3["③ kaniko-build-push"] --> T4["④ update-values"]
+    end
+
+    GH1["GitHub<br/>apps/"] -- "push detectado" --> POLL
+    POLL -- cria Workflow --> DAG
+    MANUAL -- cria Workflow --> DAG
+    T3 -- "push da imagem" --> ECR[("ECR")]
+    T4 -- "git commit + push<br/>(values.yaml)" --> GH2["GitHub<br/>apps/springboot/values.yaml"]
+    GH2 -- "commit novo detectado" --> ARGOCD["ArgoCD<br/>sync automático shard-1"]
+```
+
+Os quatro passos, na ordem em que o DAG os executa:
+
+1. **`clone-repo`** — clona o repositório e captura o SHA curto do commit (`git rev-parse --short HEAD`), usado como tag da imagem daqui pra    frente.
+2. **`maven-build`** — `mvn clean package` dentro de `apps/`, gerando o `.jar` que o `Dockerfile` só copia (não builda a app de novo).
+3. **`kaniko-build-push`** — builda `apps/Dockerfile` com **Kaniko** e dá push no ECR, autenticando via IRSA (explico logo abaixo).
+4. **`update-values`** — atualiza `image.repository`/`image.tag` em `apps/springboot/values.yaml` e dá `git commit`+`push`. É esse push que a `Application` da shard-1 (`syncPolicy.automated`) detecta e
+   sincroniza sozinha, disparando o canário descrito na seção anterior.
+
+**OBS:** Durante as pesquisas para resolver o problema do Docker, encontri o Kaniko que constroi imagens de Containers a partir de um Dockerfile sem precisar do daemon do Docker.
 
 Pra autenticar no ECR sem guardar nenhuma credencial estática no cluster,
 usei **IRSA** (IAM Roles for Service Accounts): registrei o OIDC issuer
@@ -342,7 +364,7 @@ técnico:
   AZ — mais barato, mas se a AZ onde ele está cair, as subnets privadas nas
   outras AZs perdem saída pra internet até ela voltar. Pra produção, eu
   desligaria essa flag.
-- **Sem progressão automática cronometrada** nem no Canary Deploy
+- **Sem progressão automática cronometrada** nem no canário
   (`pause: { duration: ... }`) nem entre shards (o ArgoCD tem um recurso
   nativo pra isso, `Progressive Syncs`/`RollingSync`) — o requisito pedia
   aprovação manual explícita nos dois níveis, então não usei nenhum dos
